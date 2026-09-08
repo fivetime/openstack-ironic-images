@@ -61,8 +61,17 @@ IMAGE_STORE=rbd pipelines/distro-iso/push-to-glance.sh dist ubuntu-26.04-baremet
 
 | 镜像 | 安装器 | 状态 |
 | --- | --- | --- |
-| `ubuntu-26.04-baremetal` | subiquity | CI 构建、九条校验全过、串口登录实测通过、**已推 Glance**(raw/public/rbd) |
-| `rocky-10-baremetal` | kickstart | 同上 |
+| `ubuntu-26.04-baremetal` | subiquity | CI 构建、九条校验全过、串口登录实测、已推 Glance、**DL360 Gen10 真机验收通过(2026-09-08)** |
+| `rocky-10-baremetal` | kickstart | CI 构建、九条校验全过、串口登录实测、已推 Glance;真机验收待做 |
+
+真机验收(Server07 / dl360-sfmk,Ironic `neutron` 接口 + redfish-virtual-media,root 371 GB Smart Array):
+Ironic `active`;交换机 Et29/Et30 **`in Po7` a-10G、Po7 `connected` 20G**;机内 bond0 802.3ad 两成员 10G,
+四个 VLAN 子接口地址齐、v4/v6 默认路由各一;`bnx2x smartpqi tg3` 在,`/lib/firmware/bnx2x` 6 个 blob,
+initramfs 里 ahci/smartpqi/hpsa/megaraid_sas/mpt3sas/hid-generic/mgag200/ast 全在;根分区扩到 367 GB;
+SVI、`1.1.1.1`、`2620:fe::fe`、control1 全通;`serial-getty@ttyS1` active,cmdline `console=tty0 console=ttyS1`;
+交换机 MAC 表在业务 VLAN 11 看到机器,不是只在 native 17。判据全部来自 `tests/smoke-baremetal.md`。
+交换机侧之所以能对上,是 neutron 那边同日的改动(NGS 只写聚合口 + trunk 模型),见
+`networking-generic-switch` fork 的 `1a9ca37`/`7e01eaa`。
 
 Glance 里两条记录都**不带 `hypervisor_type`**(裸金属给 Ironic 用,带上会被
 `ImagePropertiesFilter` 挡在唯一能用它的节点外),属性各取各的声明:
