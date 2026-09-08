@@ -111,8 +111,14 @@ jobs:
           # dracut-core is here for lsinitrd, which the verify stage uses
           # to read the built image's initramfs. It does not become this
           # runner's initramfs generator.
+          # qemu-utils is qemu-img, which the pipeline uses to make the
+          # disk and to convert it. It is a separate package from
+          # qemu-system-x86 and is not on a clean runner - the first CI
+          # run died on "missing required command: qemu-img" after
+          # downloading a 9.6 GB ISO, because this list was written on a
+          # workstation that already had it.
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf xorriso socat jq openssl \
+            qemu-system-x86 qemu-utils ovmf xorriso socat jq openssl \
             python3 python3-yaml dracut-core initramfs-tools-core curl
           test -e /dev/kvm || {
             echo "::error::/dev/kvm is missing: this runner cannot run an installer" >&2
@@ -122,6 +128,15 @@ jobs:
           free -m | sed -n 1,2p
           df -h "$PWD" | tail -1
           qemu-system-x86_64 --version | head -1
+          # Fail here, not after the ISO download: check every command the
+          # pipeline needs before anything expensive happens.
+          for c in qemu-system-x86_64 qemu-img xorrisofs socat jq openssl python3 blkid losetup; do
+            command -v "$c" >/dev/null || { echo "::error::missing $c on this runner" >&2; exit 1; }
+          done
+          command -v lsinitrd >/dev/null || command -v unmkinitramfs >/dev/null || {
+            echo "::error::no lsinitrd/unmkinitramfs to inspect the built initramfs with" >&2
+            exit 1
+          }
 
       - name: Cache the installer ISO
         if: ${{ matrix.cache }}
