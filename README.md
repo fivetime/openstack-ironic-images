@@ -48,7 +48,7 @@ tests/                真机验收清单
 ```bash
 ci/fetch-upstream.sh ubuntu-2604-live-server
 BAREMETAL_ADMIN_PASSWORD='...' ./build.sh ubuntu-26.04-baremetal
-IMAGE_STORE=rbd pipelines/distro-iso/push-to-glance.sh dist images/ubuntu-26.04-baremetal/image.yaml
+IMAGE_STORE=rbd pipelines/distro-iso/push-to-glance.sh dist ubuntu-26.04-baremetal
 ```
 
 `BAREMETAL_ADMIN_PASSWORD` 是**本地控制台密码**——cloud-init 没跑成时,趴在机器前面用的那个。
@@ -61,8 +61,12 @@ IMAGE_STORE=rbd pipelines/distro-iso/push-to-glance.sh dist images/ubuntu-26.04-
 
 | 镜像 | 安装器 | 状态 |
 | --- | --- | --- |
-| `ubuntu-26.04-baremetal` | subiquity | 已构建、八条校验全过、串口登录实测通过。尚未推 Glance |
+| `ubuntu-26.04-baremetal` | subiquity | CI 构建、八条校验全过、串口登录实测通过、**已推 Glance**(raw/public/rbd) |
 | `rocky-10-baremetal` | kickstart | 同上 |
+
+Glance 里两条记录都**不带 `hypervisor_type`**(裸金属给 Ironic 用,带上会被
+`ImagePropertiesFilter` 挡在唯一能用它的节点外),属性各取各的声明:
+`os_distro=ubuntu/rocky`、`os_version`、`hw_firmware_type=uefi`。
 
 2026-09-08 的实测:
 
@@ -90,6 +94,7 @@ ISO 缓存是**按镜像决定**的:GitHub 给一个仓库的缓存总量是 10 
 串口日志是主要诊断手段,截图只用于"机器根本没来得及说话"的情况。
 
 ## 待办
-- 推 Glance:`pipelines/distro-iso/push-to-glance.sh dist images/<image>/image.yaml`。
+- 在新仓库配 `OS_*` 那组 secret,之后 CI 就能一步到位推 Glance(`push_to_glance=true`);
+  现在是从控制节点手工推的(`pipelines/distro-iso/push-to-glance.sh dist [镜像名...]`)。
 - DL360 上的真机验收。
 - 别的机型:iDRAC/超微是 `ttyS0`,要各自一份声明(见 `pipelines/distro-iso/README.md`)。

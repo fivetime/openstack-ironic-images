@@ -212,8 +212,7 @@ jobs:
             "$RUNNER_TEMP/osc/bin/pip" -q install python-openstackclient
             export PATH="$RUNNER_TEMP/osc/bin:$PATH"
           fi
-          bash pipelines/distro-iso/push-to-glance.sh dist \
-            "images/${{ matrix.image }}/image.yaml"
+          bash pipelines/distro-iso/push-to-glance.sh dist '${{ matrix.image }}'
 
       - name: Upload metadata artifact
         uses: actions/upload-artifact@v4
