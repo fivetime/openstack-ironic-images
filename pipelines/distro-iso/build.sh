@@ -329,6 +329,16 @@ boot_options_text() {
     local r=$1 c
     compgen -G "$r/boot/loader/entries/*.conf" >/dev/null &&
         cat "$r"/boot/loader/entries/*.conf
+    # On RHEL-family BLS the entries say "$kernelopts" and the real
+    # options live in grubenv; on Debian they are inline in grub.cfg.
+    # Read all of it: the stray console=ttyS0 that the first Rocky
+    # deploy booted with was in grubenv and in /etc/default/grub, and in
+    # neither of the two files this function used to read.
+    # /etc/default/grub is deliberately not read: it is an *input* to
+    # grub-mkconfig, and on Ubuntu the installer's "quiet splash" there
+    # is overridden by /etc/default/grub.d/ before anything reaches the
+    # bootloader. Only what the bootloader will actually use counts.
+    [[ -f "$r/boot/grub2/grubenv" ]] && grep -a "^kernelopts=" "$r/boot/grub2/grubenv"
     c=$(grub_cfg_path "$r") && cat "$c"
 }
 
@@ -338,6 +348,20 @@ grub_console_ok() {
     [[ -n "$text" ]] || return 1
     grep -q "console=$SERIAL_CONSOLE," <<<"$text" || return 1
     grep -q "console=tty0" <<<"$text" || return 1
+    # Only the declared serial port. Anaconda copies the installer's own
+    # console=ttyS0 into the installed kernel command line, and the
+    # kernel gives /dev/console to the *last* console= it sees - so a
+    # stray extra entry silently moves the console off the BMC's port
+    # while every "is ttyS1 mentioned" check stays green.
+    # Not "grep -o | grep -qv": under pipefail the consumer's early exit
+    # kills the producer with SIGPIPE, the pipeline fails, and the
+    # negation turns that into a pass. It did, on an image that had the
+    # stray console=ttyS0 in every BLS entry.
+    local others
+    others=$(grep -oE "console=ttyS[0-9]+" <<<"$text" | grep -v "console=$SERIAL_CONSOLE\$" || true)
+    # Not the last statement of this function, so its verdict has to be
+    # returned explicitly - a bare test here is silently ignored.
+    [[ -z "$others" ]] || return 1
     grep -qE '(^|[[:space:]])(quiet|splash|rhgb)([[:space:]]|$)' <<<"$text" && return 1
     local cfg
     cfg=$(grub_cfg_path "$r") || return 1
@@ -511,6 +535,12 @@ verify_image() {
     chk "cloud-init runs and uses ConfigDrive (growth and networking on)" \
         "the machine boots with no metadata, no network and a 12 GB root" \
         cloudinit_will_work "$mnt"
+    # 10 cloud-init only *calls* growpart. On RPM distros the tool is its
+    #    own package, and without it the root stays the image's size on
+    #    whatever disk it lands on (10 GB of 371 GB, first Rocky deploy).
+    chk "growpart tool present (root grows to the disk on first boot)" \
+        "the root filesystem stays the image's size" \
+        test -x "$mnt/usr/bin/growpart"
 
     # Let go of the image before anything else can fail: the cleanup stack
     # unwinds in the right order, but a mount that is still there when the
@@ -522,8 +552,8 @@ verify_image() {
     umount "$mnt" || warn "could not unmount $mnt - the work directory will not clean up"
 
     ((_checks_failed == 0)) || \
-        die "verify failed ($_checks_failed of 9); the image is not usable on hardware"
-    log "   9/9 passed"
+        die "verify failed ($_checks_failed of 10); the image is not usable on hardware"
+    log "   10/10 passed"
 }
 
 # initrd_list <rootfs> <path-inside> — the file list of an initramfs.

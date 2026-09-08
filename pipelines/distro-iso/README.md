@@ -64,7 +64,7 @@ the day it ran.
 
 ## The console contract (what verify enforces)
 
-Nine checks, each printing its own verdict - a checker that only speaks
+Ten checks, each printing its own verdict - a checker that only speaks
 when it is unhappy cannot be told apart from one that did not run. A
 failure is a build failure: no image, no manifest, no upload.
 
@@ -77,8 +77,9 @@ failure is a build failure: no image, no manifest, no upload.
     ok   linux-firmware landed (bnx2x blobs present)
     ok   template identity (empty machine-id, no ssh host keys)
     ok   cloud-init runs and uses ConfigDrive (growth and networking on)
+    ok   growpart tool present (root grows to the disk on first boot)
 
-Five of them are the way they are because an earlier version could not do
+Seven of them are the way they are because an earlier version could not do
 its job, and every one of those was found by watching what the stage said
 about an image that was actually fine, or actually broken:
 
@@ -106,6 +107,24 @@ about an image that was actually fine, or actually broken:
   effective configuration the way cloud-init would and looks at the
   outcome. It failed on the Ubuntu image and passed on the Rocky one,
   which is how we know it discriminates.
+- **"console=ttyS1 is mentioned"** was true of a Rocky image that also
+  carried `console=ttyS0` in every BLS entry: anaconda copies the
+  *installer's* boot arguments into the installed system, and the kernel
+  hands /dev/console to the *last* `console=` it sees. The check now
+  allows exactly one serial console, reads the BLS entries and
+  `grubenv` (where RHEL keeps the real command line, not `grub.cfg`),
+  and deliberately does not read `/etc/default/grub` (an input, not
+  what boots). Its first two versions passed on the broken image - one
+  because `grep -q` on the right of a pipe under `pipefail` turns a
+  match into a failed pipeline that a leading `!` reads as success, one
+  because a bare `[[ ]]` that is not a function's last statement
+  decides nothing. Both were caught by re-running the check against the
+  known-bad image and refusing to believe a green result.
+- **cloud-init's growpart module only calls `growpart`**; on RPM distros
+  the tool is a separate package, and the first Rocky deploy kept a
+  10 GB root on a 372 GB disk with nothing but a warning in the log.
+  `cloud-utils-growpart` is now in the kickstart and the tool's presence
+  is checked.
 
 Two more things the checks have to know about the RPM side: with BLS the
 kernel command line is in `/boot/loader/entries/*.conf` and *not* in
