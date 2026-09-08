@@ -1,0 +1,35 @@
+# Rocky Linux 10 for bare metal, installed from the official DVD.
+#
+# Same reasoning as the Ubuntu declaration and the repository README: the
+# installer's package set is the vendor's own answer to hardware nobody
+# has tested, and the console settings a physical machine needs are set
+# here and asserted before the image is allowed out.
+#
+# The DVD, not the minimal ISO: the minimal one carries no AppStream and
+# cannot install offline, and this build has no network on purpose.
+#
+# Rocky's cloud image, unlike Ubuntu's, does ship the full kernel and
+# linux-firmware - but it is still a cloud image: no console password, no
+# serial console, and an initramfs built hostonly=yes on the builder's
+# hardware. That is why this one comes from the installer too.
+
+pipeline: distro-iso
+
+source:
+  iso: rocky-10-dvd
+
+installer: kickstart
+disk_size: 12G
+output_format: raw
+admin_user: sysadmin
+
+# DL360 Gen10 / iLO: serial-over-LAN is ttyS1. Dell iDRAC and Supermicro
+# use ttyS0 and would need their own declaration.
+serial_console: ttyS1
+
+glance:
+  properties:
+    hw_firmware_type: uefi
+    os_distro: rocky
+    os_version: "10"
+    # No hypervisor_type: this record is for Ironic.

@@ -1,0 +1,41 @@
+# Ubuntu 26.04 LTS for bare metal, installed from the official server ISO.
+#
+# Not derived from a cloud image, and deliberately so. A cloud image is
+# built on the assumption that nobody can walk up to the machine: the
+# upstream Ubuntu 26.04 cloud disk has no password on any account
+# (/etc/shadow is all "!"), no serial console, GRUB_TIMEOUT=0 with a
+# hidden menu, "quiet splash", no HBA drivers in its initramfs and no
+# /lib/firmware to speak of. On a VM that is fine - the recovery path is
+# to rebuild the instance. On a machine in a rack the recovery path is a
+# monitor and a keyboard, and every one of those defaults takes it away.
+#
+# So the base is the installer the vendor ships for physical machines.
+# The installer's package set is the vendor's own answer to "unknown
+# hardware": a full kernel, linux-firmware, and an account you can
+# actually log in with. Everything the installer does NOT decide - serial
+# console, grub menu, generic initramfs - is set below and asserted by
+# the pipeline before the image is allowed out.
+
+pipeline: distro-iso
+
+source:
+  iso: ubuntu-2604-live-server
+
+installer: subiquity
+disk_size: 12G
+output_format: raw            # Ironic writes it unconverted
+admin_user: sysadmin
+
+# HPE iLO puts the serial-over-LAN console on ttyS1; Dell iDRAC and
+# Supermicro use ttyS0. This fleet is DL360 Gen10, so ttyS1. A different
+# vendor needs its own declaration, not a runtime flag - getting it wrong
+# is invisible until the day someone needs the console.
+serial_console: ttyS1
+
+glance:
+  properties:
+    hw_firmware_type: uefi
+    os_distro: ubuntu
+    os_version: "26.04"
+    # No hypervisor_type on purpose: this record is for Ironic. A Nova
+    # baremetal flavor would use this same image; a Nova VM must not.

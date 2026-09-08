@@ -1,0 +1,114 @@
+#cloud-config
+# Subiquity autoinstall for the baremetal image. Read by the installer
+# from a second CD-ROM labelled CIDATA; the pipeline renders the
+# placeholders (written between doubled at-signs) before building that CD.
+#
+# Anything that decides whether a person standing in front of the machine
+# can use it lives here or in late-commands, and is checked again offline
+# by the pipeline's verify stage. The installer is not asked to be clever:
+# no LVM, no swap file games, no third-party drivers.
+autoinstall:
+  version: 1
+  interactive-sections: []
+
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+
+  # The installer needs a network only to be told it has none: the ISO
+  # carries every package installed below, and a build that can reach the
+  # archive would depend on the day it ran. QEMU gives it a restricted
+  # user-mode NIC and nothing else.
+  network:
+    version: 2
+    ethernets:
+      any:
+        match:
+          name: "e*"
+        dhcp4: true
+        optional: true
+
+  # Whole-disk, single ext4 root plus ESP. Ironic writes this image to a
+  # real disk byte for byte and cloud-init grows the last partition on
+  # first boot; LVM would put a second layer between those two facts.
+  storage:
+    layout:
+      name: direct
+
+  identity:
+    hostname: baremetal
+    username: "@@ADMIN_USER@@"
+    password: "@@ADMIN_PASSWORD_HASH@@"
+
+  ssh:
+    install-server: true
+    allow-pw: true
+
+  # Every package here must already be on the ISO: the installer VM has no
+  # route out, so anything else fails the build. All of these are in the
+  # server layer's manifest.full - which is the whole argument for using
+  # the installer instead of a cloud image, since that layer is where
+  # linux-generic and linux-firmware come from. (lldpd and smartmontools
+  # are not on the ISO; they belong in the deployment's user_data.)
+  packages:
+    - linux-generic          # not linux-image-virtual
+    - linux-firmware         # bnx2x, qed, ice DDP, cxgb4, tg3, ...
+    - cloud-init
+    - nvme-cli
+    - ethtool
+    - pciutils
+    - usbutils
+    - dmidecode
+    - kbd
+
+  # The installer powers the machine off when it is done; the QEMU
+  # process exiting is the pipeline's signal that the install finished.
+  shutdown: poweroff
+
+  late-commands:
+    # 1) The console contract. A machine nobody can see is a machine
+    #    nobody can fix: serial console on the vendor's SOL port AND on
+    #    the physical screen, a grub menu that waits, and no "quiet
+    #    splash" hiding the reason it stopped.
+    - |
+      mkdir -p /target/etc/default/grub.d /target/etc/dracut.conf.d
+      cat > /target/etc/default/grub.d/99-baremetal.cfg <<'EOF'
+      # Bare metal: the console has to work before anything else does.
+      GRUB_TIMEOUT=5
+      GRUB_TIMEOUT_STYLE=menu
+      GRUB_RECORDFAIL_TIMEOUT=5
+      GRUB_CMDLINE_LINUX_DEFAULT="console=tty0 console=@@SERIAL_CONSOLE@@,115200n8"
+      GRUB_TERMINAL="console serial"
+      GRUB_SERIAL_COMMAND="serial --unit=@@SERIAL_UNIT@@ --speed=115200 --word=8 --parity=no --stop=1"
+      EOF
+    # 2) A generic initramfs. dracut left at its default builds one with
+    #    no SCSI HBA drivers at all - fine on virtio, fatal on a Smart
+    #    Array - and drm/hid modules are what make the emergency shell
+    #    readable and typeable.
+    - |
+      cat > /target/etc/dracut.conf.d/99-baremetal.conf <<'EOF'
+      hostonly="no"
+      add_drivers+=" hid_generic usbhid mgag200 ast i2c_algo_bit "
+      EOF
+    - |
+      if [ -f /target/etc/initramfs-tools/initramfs.conf ]; then
+        sed -i 's/^MODULES=.*/MODULES=most/' /target/etc/initramfs-tools/initramfs.conf
+      fi
+    - curtin in-target --target=/target -- update-initramfs -u -k all
+    - curtin in-target --target=/target -- update-grub
+    - curtin in-target --target=/target -- systemctl enable serial-getty@@@SERIAL_CONSOLE@@.service
+
+    # 3) Metadata. Ironic and Nova both hand this machine a config drive;
+    #    nothing here should ever go looking for a metadata service on
+    #    169.254.169.254 and time out at boot.
+    - |
+      cat > /target/etc/cloud/cloud.cfg.d/99-datasources.cfg <<'EOF'
+      datasource_list: [ConfigDrive, NoCloud, None]
+      EOF
+
+    # 4) Identity. The image is a template: the installed machine-id, the
+    #    ssh host keys and cloud-init's own state must not be in it.
+    - rm -f /target/etc/ssh/ssh_host_*
+    - curtin in-target --target=/target -- cloud-init clean --logs --seed
+    - truncate -s 0 /target/etc/machine-id
+    - rm -f /target/var/lib/dbus/machine-id

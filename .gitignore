@@ -1,0 +1,5 @@
+dist/
+*.raw
+*.raw.zst
+*.tar.gz
+upstream/cache/

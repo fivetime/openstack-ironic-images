@@ -1,0 +1,36 @@
+# Upstream installer media.
+#
+# Nothing binary lives in git. This file records where each installer ISO
+# comes from, how to verify it, and what its licence is, so any image can
+# be reproduced later. The checksum is the contract: a URL that starts
+# serving different bytes fails the build instead of quietly changing what
+# goes into an image.
+#
+# Installer media only. Cloud images are deliberately absent - see the
+# repository README for the measurements behind that.
+
+artifacts:
+  ubuntu-2604-live-server:
+    description: Ubuntu 26.04.1 LTS live server installer (subiquity)
+    url: https://releases.ubuntu.com/26.04/ubuntu-26.04.1-live-server-amd64.iso
+    filename: ubuntu-2604-live-server.iso
+    sha256: "cc8a95cde20f6ced61a322420de00f10cc3c90ced545daa46cb9c1a117f1d927"
+    size_bytes: 2927861760
+    licence: various free licences (Ubuntu main/restricted)
+    note: |
+      Checksum from https://releases.ubuntu.com/26.04/SHA256SUMS, signed by
+      the Ubuntu CD image key. The server layer's manifest.full carries
+      linux-generic, linux-firmware and cloud-init, so the whole build
+      runs with the installer VM's network switched off.
+
+  rocky-10-dvd:
+    description: Rocky Linux 10.2 DVD installer (anaconda/kickstart)
+    url: https://download.rockylinux.org/pub/rocky/10/isos/x86_64/Rocky-10.2-x86_64-dvd1.iso
+    filename: rocky-10-dvd.iso
+    sha256: "16ca9c96cdb221ba6e1f68579f21bd69fd8da81c6a921d9068949796f91c8feb"
+    size_bytes: 10226171904
+    licence: various free licences (Rocky BaseOS/AppStream)
+    note: |
+      Checksum from the CHECKSUM file next to the ISO. The DVD, not the
+      minimal ISO: the minimal one has no AppStream and cannot install
+      offline.
