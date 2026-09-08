@@ -77,9 +77,19 @@ IMAGE_STORE=rbd pipelines/distro-iso/push-to-glance.sh dist images/ubuntu-26.04-
 真机验收另有一份清单:`tests/smoke-baremetal.md`。判据是交换机口协商到 10G,
 不是 Ironic 的 provision state——`active` 不证明这台机器有网。
 
-## 待办
+## CI
 
-- CI 工作流(密码走 secret,和 Windows 那条同构)。
+`.github/workflows/build-baremetal-images.yaml`,手工触发,矩阵从 `images/*/image.yaml` 发现。
+需要:**KVM 可用的 self-hosted runner**、约 30 GB 空闲磁盘,以及仓库 secret
+`BAREMETAL_ADMIN_PASSWORD`(本地控制台密码);推 Glance 还要 `OS_*` 那组 secret
+和 `OS_GATEWAY_VIP` 变量(runner 没有机房 DNS,网关按 Host 头路由,名字必须留在 URL 里并本地播种)。
+
+ISO 缓存是**按镜像决定**的:GitHub 给一个仓库的缓存总量是 10 GB,而 Rocky 的 DVD 单个就 9.6 GB,
+缓存它等于每次运行把别的都挤掉、还未必命中;discover 从 `upstream/sources.yaml` 的 `size_bytes`
+判断,只缓存小于 5 GB 的。失败时安装期的**串口日志**和截图会作为 artifact 传上来——
+串口日志是主要诊断手段,截图只用于"机器根本没来得及说话"的情况。
+
+## 待办
 - 推 Glance:`pipelines/distro-iso/push-to-glance.sh dist images/<image>/image.yaml`。
 - DL360 上的真机验收。
 - 别的机型:iDRAC/超微是 `ttyS0`,要各自一份声明(见 `pipelines/distro-iso/README.md`)。

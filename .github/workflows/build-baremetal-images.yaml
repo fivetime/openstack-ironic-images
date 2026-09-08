@@ -1,0 +1,224 @@
+name: Build bare-metal images
+
+# Installs each declaration under images/ from the distro's own installer
+# media, unattended, in QEMU/KVM, and verifies the result offline before
+# it is allowed anywhere near a machine. See pipelines/distro-iso/README.md
+# for what the eight checks are and why each one exists.
+#
+# Manual only. There is no upstream signal to follow: an installer ISO
+# changes on the distro's release schedule, not daily, and a build costs
+# 15-50 minutes of a KVM-capable runner.
+#
+# Glance is the only destination. A GitHub release cannot hold these: the
+# asset cap is 2 GB and a bare-metal disk is 12 GB. The manifest and
+# checksum are kept as workflow artifacts so a run leaves a record of what
+# it produced.
+#
+# Runner requirements: /dev/kvm, roughly 30 GB free disk (the ISO plus a
+# sparse 12 GB disk of which about 4 GB fills), and the console password
+# in the BAREMETAL_ADMIN_PASSWORD secret.
+
+on:
+  workflow_dispatch:
+    inputs:
+      push_to_glance:
+        description: 'Push to Glance (needs OS_* secrets + reachable endpoint)'
+        type: boolean
+        default: false
+      images:
+        description: 'Space-separated image names to build (empty = all)'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-baremetal-images
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: self-hosted
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Images from the declarations
+        id: gen
+        shell: bash
+        env:
+          WANTED: ${{ inputs.images }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-yaml jq
+          matrix=$(python3 - <<'PY'
+          import glob, json, os, sys, yaml
+
+          with open("upstream/sources.yaml") as fh:
+              artifacts = (yaml.safe_load(fh) or {}).get("artifacts") or {}
+
+          wanted = os.environ.get("WANTED", "").split()
+          rows = []
+          for path in sorted(glob.glob("images/*/image.yaml")):
+              name = path.split("/")[1]
+              if wanted and name not in wanted:
+                  continue
+              with open(path) as fh:
+                  decl = yaml.safe_load(fh) or {}
+              if decl.get("enabled") is False and not wanted:
+                  continue
+              iso = ((decl.get("source") or {}).get("iso"))
+              if not iso:
+                  sys.exit(f"{path}: source.iso is required")
+              size = int((artifacts.get(iso) or {}).get("size_bytes") or 0)
+              # GitHub gives a repository 10 GB of cache in total. The
+              # Rocky DVD alone is 9.6 GB, so caching it would evict
+              # everything else on every run and still be a coin toss;
+              # it downloads at 25 MB/s anyway. Cache the small ones only.
+              rows.append({"image": name, "iso": iso,
+                           "cache": size and size < 5_000_000_000})
+          if not rows:
+              sys.exit("no images selected")
+          print(json.dumps(rows))
+          PY
+          )
+          {
+            echo "## Images"
+            jq -r '.[] | "- \(.image) (iso: \(.iso), cache: \(.cache))"' <<<"$matrix"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: discover
+    runs-on: self-hosted
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          # dracut-core is here for lsinitrd, which the verify stage uses
+          # to read the built image's initramfs. It does not become this
+          # runner's initramfs generator.
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 ovmf xorriso socat jq openssl \
+            python3 python3-yaml dracut-core initramfs-tools-core curl
+          test -e /dev/kvm || {
+            echo "::error::/dev/kvm is missing: this runner cannot run an installer" >&2
+            exit 1
+          }
+          lscpu | grep -E 'Model name|^CPU\(s\)|Hypervisor|Virtualization'
+          free -m | sed -n 1,2p
+          df -h "$PWD" | tail -1
+          qemu-system-x86_64 --version | head -1
+
+      - name: Cache the installer ISO
+        if: ${{ matrix.cache }}
+        uses: actions/cache@v4
+        with:
+          path: upstream/cache/${{ matrix.iso }}.iso
+          key: iso-${{ matrix.iso }}-${{ hashFiles('upstream/sources.yaml') }}
+
+      - name: Fetch the installer ISO
+        run: bash ci/fetch-upstream.sh '${{ matrix.iso }}'
+
+      - name: Build
+        env:
+          BAREMETAL_ADMIN_PASSWORD: ${{ secrets.BAREMETAL_ADMIN_PASSWORD }}
+        run: |
+          [[ -n "$BAREMETAL_ADMIN_PASSWORD" ]] || {
+            echo "::error::BAREMETAL_ADMIN_PASSWORD secret is not set" >&2
+            exit 1
+          }
+          sudo env \
+            BAREMETAL_ADMIN_PASSWORD="$BAREMETAL_ADMIN_PASSWORD" \
+            OUTPUT_DIR="$PWD/dist" \
+            ./build.sh '${{ matrix.image }}'
+
+      - name: Validate artifacts
+        run: |
+          set -eux
+          sudo chown -R "$(id -u):$(id -g)" dist
+          # The manifest is the contract the uploader reads; a build that
+          # got this far has already passed the eight console checks, so
+          # this is about the record being complete, not a second opinion.
+          jq -e '.target == "baremetal" and .baremetal_firmware == true
+                 and (.serial_console | length > 0)
+                 and (.admin_user | length > 0)' \
+            "dist/${{ matrix.image }}.manifest.json"
+          jq . "dist/${{ matrix.image }}.manifest.json"
+          cat "dist/${{ matrix.image }}.sha256"
+
+      # A RaaS runner has no datacenter DNS and the gateway routes by Host
+      # header, so the names have to stay in the URL and be seeded locally.
+      - name: Point the OpenStack public names at the gateway
+        if: ${{ inputs.push_to_glance && vars.OS_GATEWAY_VIP != '' }}
+        run: |
+          services="keystone glance nova neutron cinder placement"
+          for ip in ${{ vars.OS_GATEWAY_VIP }}; do
+              names=""
+              for svc in $services; do
+                  names="$names ${svc}.openstack.svc.cluster.local ${svc}.openstack ${svc}"
+              done
+              echo "${ip}${names}" | sudo tee -a /etc/hosts
+          done
+          getent hosts keystone.openstack.svc.cluster.local
+
+      - name: Push this image to Glance
+        if: ${{ inputs.push_to_glance }}
+        env:
+          OS_CLOUD: ${{ secrets.OS_CLOUD }}
+          OS_AUTH_URL: ${{ secrets.OS_AUTH_URL }}
+          OS_PROJECT_NAME: ${{ secrets.OS_PROJECT_NAME }}
+          OS_PROJECT_DOMAIN_NAME: ${{ secrets.OS_PROJECT_DOMAIN_NAME }}
+          OS_USERNAME: ${{ secrets.OS_USERNAME }}
+          OS_USER_DOMAIN_NAME: ${{ secrets.OS_USER_DOMAIN_NAME }}
+          OS_PASSWORD: ${{ secrets.OS_PASSWORD }}
+          OS_REGION_NAME: ${{ secrets.OS_REGION_NAME }}
+          OS_IDENTITY_API_VERSION: '3'
+          OS_INTERFACE: ${{ vars.OS_INTERFACE || 'public' }}
+          IMAGE_STORE: ${{ vars.GLANCE_IMAGE_STORE || 'rbd' }}
+          VISIBILITY: ${{ vars.GLANCE_VISIBILITY || 'public' }}
+          IMAGE_IMPORT_TIMEOUT: '1800'
+        run: |
+          if ! command -v openstack >/dev/null; then
+            python3 -m venv "$RUNNER_TEMP/osc"
+            "$RUNNER_TEMP/osc/bin/pip" -q install python-openstackclient
+            export PATH="$RUNNER_TEMP/osc/bin:$PATH"
+          fi
+          bash pipelines/distro-iso/push-to-glance.sh dist \
+            "images/${{ matrix.image }}/image.yaml"
+
+      - name: Upload metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: meta-${{ matrix.image }}
+          path: |
+            dist/${{ matrix.image }}.manifest.json
+            dist/${{ matrix.image }}.sha256
+          retention-days: 30
+          if-no-files-found: error
+
+      # The serial log is the whole diagnostic: the installer writes its
+      # transcript there, so a failed run is readable instead of being a
+      # screenshot to squint at. Screenshots come along for the cases
+      # where the machine never got as far as talking.
+      - name: Upload the install transcript on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-${{ matrix.image }}
+          path: dist/${{ matrix.image }}.install/
+          retention-days: 7
+          if-no-files-found: ignore
