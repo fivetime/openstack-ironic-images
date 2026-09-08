@@ -64,7 +64,7 @@ the day it ran.
 
 ## The console contract (what verify enforces)
 
-Eight checks, each printing its own verdict - a checker that only speaks
+Nine checks, each printing its own verdict - a checker that only speaks
 when it is unhappy cannot be told apart from one that did not run. A
 failure is a build failure: no image, no manifest, no upload.
 
@@ -75,9 +75,10 @@ failure is a build failure: no image, no manifest, no upload.
     ok   early-boot storage drivers (ahci smartpqi hpsa megaraid_sas mpt3sas nvme)
     ok   early-boot console drivers (hid_generic usbhid mgag200 ast)
     ok   linux-firmware landed (bnx2x blobs present)
-    ok   template identity (empty machine-id, no ssh host keys, ConfigDrive)
+    ok   template identity (empty machine-id, no ssh host keys)
+    ok   cloud-init runs and uses ConfigDrive (growth and networking on)
 
-Four of them are the way they are because an earlier version could not do
+Five of them are the way they are because an earlier version could not do
 its job, and every one of those was found by watching what the stage said
 about an image that was actually fine, or actually broken:
 
@@ -93,6 +94,18 @@ about an image that was actually fine, or actually broken:
 - **Reading `/boot` off the root filesystem** finds nothing when the
   image has a separate `/boot` partition, as the Rocky kickstart does.
   The stage mounts it (from the image's own fstab) before looking.
+- **"grep ConfigDrive in cloud.cfg.d"** finds the file this pipeline
+  wrote and says nothing about what wins. Subiquity leaves
+  `99-installer.cfg` behind, `cloud.cfg.d` is merged in lexicographic
+  order, and `99-installer` sorts after `99-datasources`: the installed
+  image had `datasource_list: [None]`, whose datasource writes
+  `/etc/cloud/cloud-init.disabled` on first boot and turns off `growpart`
+  and `resize_rootfs`. Deployed, that machine reads no metadata,
+  configures no network, keeps the hostname `baremetal` and never grows
+  past 12 GB - and Ironic reports success. The check now computes the
+  effective configuration the way cloud-init would and looks at the
+  outcome. It failed on the Ubuntu image and passed on the Rocky one,
+  which is how we know it discriminates.
 
 Two more things the checks have to know about the RPM side: with BLS the
 kernel command line is in `/boot/loader/entries/*.conf` and *not* in

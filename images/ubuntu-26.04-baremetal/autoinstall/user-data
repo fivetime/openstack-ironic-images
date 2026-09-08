@@ -106,7 +106,28 @@ autoinstall:
       datasource_list: [ConfigDrive, NoCloud, None]
       EOF
 
-    # 4) Identity. The image is a template: the installed machine-id, the
+    # 4) Undo what the installer does to cloud-init on the installed
+    #    system. Subiquity leaves three things behind that together make
+    #    this image inert when Ironic deploys it:
+    #      99-installer.cfg pins datasource_list to [None] - and
+    #        cloud.cfg.d is merged in lexicographic order, so it beats the
+    #        99-datasources.cfg written above - with a None datasource
+    #        whose user-data writes /etc/cloud/cloud-init.disabled and
+    #        turns off growpart and resize_rootfs;
+    #      00-subiquity-disable-cloudinit-networking.cfg sets
+    #        network: {config: disabled}, so config-drive network data is
+    #        ignored;
+    #      00-installer-config.yaml is this build VM's DHCP netplan, which
+    #        would fight the bond a delivered machine is given.
+    #    Deployed as-is that machine reads no metadata, configures no
+    #    network, keeps the hostname "baremetal" and never grows past
+    #    12 GB - while Ironic reports success.
+    - rm -f /target/etc/cloud/cloud.cfg.d/99-installer.cfg
+    - rm -f /target/etc/cloud/cloud.cfg.d/00-subiquity-disable-cloudinit-networking.cfg
+    - rm -f /target/etc/cloud/cloud-init.disabled
+    - rm -f /target/etc/netplan/00-installer-config.yaml
+
+    # 5) Identity. The image is a template: the installed machine-id, the
     #    ssh host keys and cloud-init's own state must not be in it.
     - rm -f /target/etc/ssh/ssh_host_*
     - curtin in-target --target=/target -- cloud-init clean --logs --seed

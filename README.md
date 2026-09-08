@@ -55,13 +55,13 @@ IMAGE_STORE=rbd pipelines/distro-iso/push-to-glance.sh dist ubuntu-26.04-baremet
 不进仓库,CI 从 secret 注入。`VERIFY_ONLY=1` 只重跑校验,`INSTALL_ONLY=1` 只装不校验,
 `KEEP_VM_ON_FAILURE=1` 失败时留着虚机。需要 root(loop 挂载)和 `/dev/kvm`。
 
-细节、八条校验、以及每条为什么存在,见 `pipelines/distro-iso/README.md`。
+细节、九条校验、以及每条为什么存在,见 `pipelines/distro-iso/README.md`。
 
 ## 现状
 
 | 镜像 | 安装器 | 状态 |
 | --- | --- | --- |
-| `ubuntu-26.04-baremetal` | subiquity | CI 构建、八条校验全过、串口登录实测通过、**已推 Glance**(raw/public/rbd) |
+| `ubuntu-26.04-baremetal` | subiquity | CI 构建、九条校验全过、串口登录实测通过、**已推 Glance**(raw/public/rbd) |
 | `rocky-10-baremetal` | kickstart | 同上 |
 
 Glance 里两条记录都**不带 `hypervisor_type`**(裸金属给 Ironic 用,带上会被

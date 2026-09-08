@@ -376,7 +376,82 @@ is_a_template() {
     local r=$1
     [[ ! -s "$r/etc/machine-id" ]] || return 1
     ! compgen -G "$r/etc/ssh/ssh_host_*" >/dev/null || return 1
-    grep -rqs "ConfigDrive" "$r/etc/cloud/cloud.cfg.d/"
+    [[ ! -e "$r/var/lib/dbus/machine-id" ]] || return 1
+}
+
+# Whether cloud-init will actually run on the deployed machine and read
+# the config drive Ironic attaches.
+#
+# "grep ConfigDrive in cloud.cfg.d" is not that question: it finds the
+# file this pipeline wrote and says nothing about what wins. Subiquity
+# leaves /etc/cloud/cloud.cfg.d/99-installer.cfg behind, cloud.cfg.d is
+# merged in lexicographic order, and 99-installer sorts after
+# 99-datasources - so the installed image had datasource_list [None],
+# whose datasource writes /etc/cloud/cloud-init.disabled on first boot
+# and also turns off growpart and resize_rootfs. Deployed, that machine
+# reads no metadata, configures no network, keeps the hostname
+# "baremetal" and never grows past 12 GB - and Ironic still reports
+# success. So compute the effective configuration the way cloud-init
+# would, and check the outcome.
+cloudinit_will_work() {
+    local r=$1
+    python3 - "$r" <<'CLOUDINIT'
+import glob, os, sys
+try:
+    import yaml
+except ImportError:
+    sys.exit("python3-yaml is required")
+
+root = sys.argv[1]
+if os.path.exists(os.path.join(root, "etc/cloud/cloud-init.disabled")):
+    sys.exit("cloud-init is disabled in the image (/etc/cloud/cloud-init.disabled)")
+
+files = [os.path.join(root, "etc/cloud/cloud.cfg")]
+files += sorted(glob.glob(os.path.join(root, "etc/cloud/cloud.cfg.d/*.cfg")))
+
+datasources, growpart, resize, netcfg, offenders = None, None, None, None, {}
+for path in files:
+    if not os.path.isfile(path):
+        continue
+    try:
+        with open(path, errors="replace") as fh:
+            doc = yaml.safe_load(fh) or {}
+    except yaml.YAMLError:
+        continue
+    if not isinstance(doc, dict):
+        continue
+    if "datasource_list" in doc:
+        datasources = doc["datasource_list"]
+        offenders["datasource_list"] = os.path.basename(path)
+    if isinstance(doc.get("growpart"), dict) and "mode" in doc["growpart"]:
+        growpart = doc["growpart"]["mode"]
+        offenders["growpart"] = os.path.basename(path)
+    if "resize_rootfs" in doc:
+        resize = doc["resize_rootfs"]
+        offenders["resize_rootfs"] = os.path.basename(path)
+    if isinstance(doc.get("network"), dict) and "config" in doc["network"]:
+        netcfg = doc["network"]["config"]
+        offenders["network"] = os.path.basename(path)
+
+problems = []
+if not datasources or "ConfigDrive" not in datasources:
+    problems.append(f"effective datasource_list is {datasources!r} "
+                    f"(from {offenders.get('datasource_list', 'nowhere')})")
+if str(growpart).lower() in ("off", "false"):
+    problems.append(f"growpart is {growpart!r} (from {offenders.get('growpart')})")
+if resize is False:
+    problems.append(f"resize_rootfs is off (from {offenders.get('resize_rootfs')})")
+if netcfg == "disabled":
+    problems.append(f"cloud-init networking is disabled (from {offenders.get('network')})")
+
+stale = glob.glob(os.path.join(root, "etc/netplan/*installer*"))
+if stale:
+    problems.append("the installer's netplan is still there: " +
+                    ", ".join(os.path.basename(f) for f in stale))
+
+if problems:
+    sys.exit("; ".join(problems))
+CLOUDINIT
 }
 
 verify_image() {
@@ -429,9 +504,13 @@ verify_image() {
         "cards that load host firmware stay dark" \
         firmware_landed "$mnt"
     # 8 A template, not a machine.
-    chk "template identity (empty machine-id, no ssh host keys, ConfigDrive)" \
+    chk "template identity (empty machine-id, no ssh host keys)" \
         "every deployed machine would share an identity" \
         is_a_template "$mnt"
+    # 9 And one that will actually read the config drive it is given.
+    chk "cloud-init runs and uses ConfigDrive (growth and networking on)" \
+        "the machine boots with no metadata, no network and a 12 GB root" \
+        cloudinit_will_work "$mnt"
 
     # Let go of the image before anything else can fail: the cleanup stack
     # unwinds in the right order, but a mount that is still there when the
@@ -443,8 +522,8 @@ verify_image() {
     umount "$mnt" || warn "could not unmount $mnt - the work directory will not clean up"
 
     ((_checks_failed == 0)) || \
-        die "verify failed ($_checks_failed of 8); the image is not usable on hardware"
-    log "   8/8 passed"
+        die "verify failed ($_checks_failed of 9); the image is not usable on hardware"
+    log "   9/9 passed"
 }
 
 # initrd_list <rootfs> <path-inside> — the file list of an initramfs.
