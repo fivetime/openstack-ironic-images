@@ -64,7 +64,7 @@ the day it ran.
 
 ## The console contract (what verify enforces)
 
-Ten checks, each printing its own verdict - a checker that only speaks
+Eleven checks, each printing its own verdict - a checker that only speaks
 when it is unhappy cannot be told apart from one that did not run. A
 failure is a build failure: no image, no manifest, no upload.
 
@@ -78,6 +78,7 @@ failure is a build failure: no image, no manifest, no upload.
     ok   template identity (empty machine-id, no ssh host keys)
     ok   cloud-init runs and uses ConfigDrive (growth and networking on)
     ok   growpart tool present (root grows to the disk on first boot)
+    ok   no hypervisor guest agent (qemu-ga, vmtoolsd, hv_kvp_daemon, spice-vdagent)
 
 Seven of them are the way they are because an earlier version could not do
 its job, and every one of those was found by watching what the stage said

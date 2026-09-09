@@ -396,6 +396,57 @@ firmware_landed() {
     compgen -G "$1/usr/lib/firmware/bnx2x/*" >/dev/null ||
     compgen -G "$1/lib/firmware/bnx2x/*" >/dev/null
 }
+# Hypervisor guest agents have no business on bare metal, and both
+# installers put one there on their own: anaconda adds @platform-kvm
+# (qemu-guest-agent) because the build runs in KVM, and ubuntu-server
+# Recommends open-vm-tools on any hardware. Neither runs on a physical
+# machine, but a tenant who finds one on a rented server reads it as the
+# operator's foothold. Ask the package database, not the unit files: a
+# unit can be masked while the package - and the binary - stays.
+# Prints the agents found, one per line; empty means clean.
+guest_agents_found() {
+    python3 - "$1" <<'AGENTS'
+import os, sqlite3, sys
+root = sys.argv[1]
+agents = {"qemu-guest-agent", "open-vm-tools", "hyperv-daemons", "spice-vdagent"}
+found = set()
+status = os.path.join(root, "var/lib/dpkg/status")
+if os.path.isfile(status):
+    name, installed = None, False
+    for line in open(status, errors="replace"):
+        if line.startswith("Package: "):
+            name, installed = line.split(None, 1)[1].strip(), False
+        elif line.startswith("Status: ") and "installed" in line and "not-installed" not in line:
+            installed = True
+        elif line.strip() == "" and name in agents and installed:
+            found.add(name)
+for db in ("usr/lib/sysimage/rpm/rpmdb.sqlite", "var/lib/rpm/rpmdb.sqlite"):
+    path = os.path.join(root, db)
+    if not os.path.isfile(path):
+        continue
+    try:
+        con = sqlite3.connect(f"file:{path}?immutable=1", uri=True)
+        for (key,) in con.execute("select key from Name"):
+            name = key.decode() if isinstance(key, bytes) else str(key)
+            if name in agents:
+                found.add(name)
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+for rel in ("usr/bin/qemu-ga", "usr/sbin/qemu-ga", "usr/bin/vmtoolsd",
+            "usr/sbin/hv_kvp_daemon", "usr/bin/spice-vdagent"):
+    if os.path.exists(os.path.join(root, rel)):
+        found.add(os.path.basename(rel))
+print("\n".join(sorted(found)))
+AGENTS
+}
+no_guest_agents() {
+    GUEST_AGENTS=$(guest_agents_found "$1" | tr '\n' ' ')
+    GUEST_AGENTS=${GUEST_AGENTS% }
+    [[ -z "$GUEST_AGENTS" ]] || { log "        found: $GUEST_AGENTS"; return 1; }
+}
 is_a_template() {
     local r=$1
     [[ ! -s "$r/etc/machine-id" ]] || return 1
@@ -479,7 +530,7 @@ CLOUDINIT
 }
 
 verify_image() {
-    log "== verify: console contract, initramfs, firmware"
+    log "== verify: console contract, initramfs, firmware, no guest agent"
     local loop root img list boot_mnt=
     _checks_failed=0
     disk_attach loop "$raw" -P
@@ -541,6 +592,12 @@ verify_image() {
     chk "growpart tool present (root grows to the disk on first boot)" \
         "the root filesystem stays the image's size" \
         test -x "$mnt/usr/bin/growpart"
+    # 11 Nothing that answers to a hypervisor. The manifest records the
+    #    outcome instead of asserting it by hand.
+    GUEST_AGENTS=
+    chk "no hypervisor guest agent (qemu-ga, vmtoolsd, hv_kvp_daemon, spice-vdagent)" \
+        "a tenant would find the operator's agent on the machine they rent" \
+        no_guest_agents "$mnt"
 
     # Let go of the image before anything else can fail: the cleanup stack
     # unwinds in the right order, but a mount that is still there when the
@@ -552,8 +609,8 @@ verify_image() {
     umount "$mnt" || warn "could not unmount $mnt - the work directory will not clean up"
 
     ((_checks_failed == 0)) || \
-        die "verify failed ($_checks_failed of 10); the image is not usable on hardware"
-    log "   10/10 passed"
+        die "verify failed ($_checks_failed of 11); the image is not usable on hardware"
+    log "   11/11 passed"
 }
 
 # initrd_list <rootfs> <path-inside> — the file list of an initramfs.
@@ -580,6 +637,9 @@ initrd_list() {
 }
 
 # ----------------------------------------------------------- manifest
+# qemu_guest_agent is what verify measured (check 11), never a constant:
+# the first Rocky image carried qemu-guest-agent while its manifest
+# said false.
 write_manifest() {
     local out="$raw" fmt=$OUTPUT_FORMAT
     if [[ "$fmt" != raw ]]; then
@@ -594,10 +654,11 @@ write_manifest() {
         --arg installer "$INSTALLER" \
         --arg serial "$SERIAL_CONSOLE" \
         --arg user "$ADMIN_USER" \
+        --argjson qga "$([[ -n "${GUEST_AGENTS:-}" ]] && echo true || echo false)" \
         '{disk: $disk, disk_format: $fmt, target: "baremetal",
           source_iso: $iso, installer: $installer,
           serial_console: $serial, admin_user: $user,
-          qemu_guest_agent: false, baremetal_firmware: true}')" >/dev/null
+          qemu_guest_agent: $qga, baremetal_firmware: true}')" >/dev/null
     log "== done: $out"
 }
 

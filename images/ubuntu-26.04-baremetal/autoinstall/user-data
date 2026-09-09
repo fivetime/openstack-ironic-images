@@ -127,7 +127,25 @@ autoinstall:
     - rm -f /target/etc/cloud/cloud-init.disabled
     - rm -f /target/etc/netplan/00-installer-config.yaml
 
-    # 5) Identity. The image is a template: the installed machine-id, the
+    # 5) No hypervisor guest agent. ubuntu-server Recommends open-vm-tools,
+    #    so a plain server install carries a VMware agent on any hardware
+    #    (dpkg marks it auto-installed; found in the first image, 2026-09-09).
+    #    It never runs on bare metal (ConditionVirtualization=vmware), but a
+    #    tenant who finds vmtoolsd on a machine they rent reads it as the
+    #    operator's foothold. Purge it, and pin it and the QEMU agent out so
+    #    an upgrade of the metapackage cannot bring either back. Asserted
+    #    offline by the verify stage.
+    - curtin in-target --target=/target -- apt-get -y purge open-vm-tools
+    - curtin in-target --target=/target -- apt-get -y autoremove --purge
+    - |
+      cat > /target/etc/apt/preferences.d/99-no-guest-agents <<'EOF'
+      # Bare metal: no hypervisor guest agent, whatever recommends one.
+      Package: open-vm-tools open-vm-tools-desktop qemu-guest-agent hyperv-daemons
+      Pin: release *
+      Pin-Priority: -1
+      EOF
+
+    # 6) Identity. The image is a template: the installed machine-id, the
     #    ssh host keys and cloud-init's own state must not be in it.
     - rm -f /target/etc/ssh/ssh_host_*
     - curtin in-target --target=/target -- cloud-init clean --logs --seed
