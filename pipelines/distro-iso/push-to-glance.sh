@@ -11,6 +11,12 @@
 # manifests happen to be in the directory is how a Rocky disk ends up in
 # Glance labelled os_distro=ubuntu.
 #
+# A layered image (manifest.base_image != name) takes its base image's
+# declaration, plus the properties its layer declares - read from the
+# manifest, where the layer's verify stage put what it measured in the
+# image. k8s_version is the one the Magnum driver looks at: with it, the
+# driver knows the stack is already there and skips nodeBootstrap.
+#
 # Note what these records deliberately do NOT set: hypervisor_type. They
 # are for Ironic, and standalone Ironic does not consult the Nova
 # scheduler; a Nova-driven baremetal flavor uses the same record. Put
@@ -62,8 +68,9 @@ while read -r manifest; do
         [[ -n "$skip" ]] && continue
     fi
 
-    decl="$REPO_DIR/images/$name/image.yaml"
-    [[ -f "$decl" ]] || die "$manifest names $name, but there is no $decl"
+    base=$(jq -r '.base_image // .name' "$manifest")
+    decl="$REPO_DIR/images/$base/image.yaml"
+    [[ -f "$decl" ]] || die "$manifest names base image $base, but there is no $decl"
 
     mapfile -t decl_props < <(declaration_props "$decl")
     ((${#decl_props[@]})) || die "$decl: no glance.properties"
@@ -75,12 +82,24 @@ while read -r manifest; do
         props+=(--property "$kv")
     done
 
+    layer=$(jq -r '.layer // ""' "$manifest")
+    if [[ -n "$layer" ]]; then
+        ldecl="$REPO_DIR/layers/$layer/layer.yaml"
+        [[ -f "$ldecl" ]] || die "$manifest names layer $layer, but there is no $ldecl"
+        while read -r key; do
+            [[ -n "$key" ]] || continue
+            val=$(jq -r --arg k "$key" '.[$k] | if . == null then "" else tostring end' "$manifest")
+            [[ -n "$val" ]] || die "$manifest: layer $layer wants property $key, which the manifest lacks"
+            props+=(--property "$key=$val")
+        done < <(python3 -c 'import sys,yaml; print("\n".join(yaml.safe_load(open(sys.argv[1]))["glance"]["properties_from_manifest"]))' "$ldecl")
+    fi
+
     disk=$(jq -r '.disk' "$manifest")
     disk_format=$(jq -r '.disk_format // "raw"' "$manifest")
     serial=$(jq -r '.serial_console // "?"' "$manifest")
     user=$(jq -r '.admin_user // "?"' "$manifest")
 
-    log "== $name (console=$serial admin=$user) =="
+    log "== $name (console=$serial admin=$user${layer:+ layer=$layer}) =="
     glance_upload "$name$NAME_SUFFIX" "$DIST_DIR/$disk" "$disk_format" \
         "${props[@]}"
     pushed=$((pushed + 1))

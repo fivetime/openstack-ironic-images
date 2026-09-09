@@ -29,6 +29,10 @@ on:
         description: 'Space-separated image names to build (empty = all)'
         type: string
         default: ''
+      k8s_versions:
+        description: 'Kubernetes versions to layer on each image, space separated (empty = base images only)'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -52,6 +56,7 @@ jobs:
         shell: bash
         env:
           WANTED: ${{ inputs.images }}
+          K8S_VERSIONS: ${{ inputs.k8s_versions }}
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends python3-yaml jq
@@ -62,6 +67,15 @@ jobs:
               artifacts = (yaml.safe_load(fh) or {}).get("artifacts") or {}
 
           wanted = os.environ.get("WANTED", "").split()
+          # A layered image is one more matrix row per (image, version):
+          # the base is installed in that row too (a job has no disk from
+          # another job to start from), so asking for versions costs one
+          # install per version. The lock must already exist: the build
+          # never resolves anything on the day it runs.
+          versions = os.environ.get("K8S_VERSIONS", "").split()
+          for v in versions:
+              if not os.path.isdir(f"layers/kubernetes/lock/{v}"):
+                  sys.exit(f"no lock for Kubernetes {v}: run layers/kubernetes/resolve.sh and resolve-packages.sh, commit lock/")
           rows = []
           for path in sorted(glob.glob("images/*/image.yaml")):
               name = path.split("/")[1]
@@ -79,8 +93,13 @@ jobs:
               # Rocky DVD alone is 9.6 GB, so caching it would evict
               # everything else on every run and still be a coin toss;
               # it downloads at 25 MB/s anyway. Cache the small ones only.
-              rows.append({"image": name, "iso": iso,
-                           "cache": size and size < 5_000_000_000})
+              base = {"image": name, "iso": iso,
+                      "cache": size and size < 5_000_000_000}
+              rows.append(dict(base, k8s="", name=name))
+              for v in versions:
+                  if not os.path.isfile(f"layers/kubernetes/lock/{v}/packages-{name}.yaml"):
+                      sys.exit(f"no package lock for {name} at Kubernetes {v}: run layers/kubernetes/resolve-packages.sh {v} {name}")
+                  rows.append(dict(base, k8s=v, name=f"{name}-v{v}"))
           if not rows:
               sys.exit("no images selected")
           print(json.dumps(rows))
@@ -88,7 +107,7 @@ jobs:
           )
           {
             echo "## Images"
-            jq -r '.[] | "- \(.image) (iso: \(.iso), cache: \(.cache))"' <<<"$matrix"
+            jq -r '.[] | "- \(.name) (iso: \(.iso), cache: \(.cache)\(if .k8s != "" then ", layer: kubernetes " + .k8s else "" end))"' <<<"$matrix"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
@@ -148,6 +167,23 @@ jobs:
       - name: Fetch the installer ISO
         run: bash ci/fetch-upstream.sh '${{ matrix.iso }}'
 
+      # The layer's artifacts, images and packages: 2.5 GB, keyed on the
+      # lock files, so a lock that has not moved is a cache hit. Fetching
+      # needs root for the redhat family (the RPMs are copied out of the
+      # installer ISO, which is loop-mounted).
+      - name: Cache the Kubernetes layer
+        if: ${{ matrix.k8s != '' }}
+        uses: actions/cache@v4
+        with:
+          path: upstream/cache/layers/kubernetes/${{ matrix.k8s }}
+          key: layer-kubernetes-${{ matrix.k8s }}-${{ hashFiles(format('layers/kubernetes/lock/{0}/*.yaml', matrix.k8s)) }}
+
+      - name: Fetch the Kubernetes layer
+        if: ${{ matrix.k8s != '' }}
+        run: |
+          sudo bash ci/fetch-layer.sh kubernetes '${{ matrix.k8s }}' '${{ matrix.image }}'
+          sudo chown -R "$(id -u):$(id -g)" upstream/cache/layers
+
       - name: Build
         env:
           BAREMETAL_ADMIN_PASSWORD: ${{ secrets.BAREMETAL_ADMIN_PASSWORD }}
@@ -156,10 +192,12 @@ jobs:
             echo "::error::BAREMETAL_ADMIN_PASSWORD secret is not set" >&2
             exit 1
           }
+          layer=()
+          [[ -n '${{ matrix.k8s }}' ]] && layer=(--layer 'kubernetes=${{ matrix.k8s }}')
           sudo env \
             BAREMETAL_ADMIN_PASSWORD="$BAREMETAL_ADMIN_PASSWORD" \
             OUTPUT_DIR="$PWD/dist" \
-            ./build.sh '${{ matrix.image }}'
+            ./build.sh '${{ matrix.image }}' "${layer[@]}"
 
       - name: Validate artifacts
         run: |
@@ -171,9 +209,15 @@ jobs:
           jq -e '.target == "baremetal" and .baremetal_firmware == true
                  and (.serial_console | length > 0)
                  and (.admin_user | length > 0)' \
-            "dist/${{ matrix.image }}.manifest.json"
-          jq . "dist/${{ matrix.image }}.manifest.json"
-          cat "dist/${{ matrix.image }}.sha256"
+            "dist/${{ matrix.name }}.manifest.json"
+          if [[ -n '${{ matrix.k8s }}' ]]; then
+            # The layer's verify read these back from the image.
+            jq -e '.k8s_version == "${{ matrix.k8s }}" and .images_preloaded == true
+                   and (.kata_handlers | length > 0)' \
+              "dist/${{ matrix.name }}.manifest.json"
+          fi
+          jq . "dist/${{ matrix.name }}.manifest.json"
+          cat "dist/${{ matrix.name }}.sha256"
 
       # A RaaS runner has no datacenter DNS and the gateway routes by Host
       # header, so the names have to stay in the URL and be seeded locally.
@@ -212,15 +256,15 @@ jobs:
             "$RUNNER_TEMP/osc/bin/pip" -q install python-openstackclient
             export PATH="$RUNNER_TEMP/osc/bin:$PATH"
           fi
-          bash pipelines/distro-iso/push-to-glance.sh dist '${{ matrix.image }}'
+          bash pipelines/distro-iso/push-to-glance.sh dist '${{ matrix.name }}'
 
       - name: Upload metadata artifact
         uses: actions/upload-artifact@v4
         with:
-          name: meta-${{ matrix.image }}
+          name: meta-${{ matrix.name }}
           path: |
-            dist/${{ matrix.image }}.manifest.json
-            dist/${{ matrix.image }}.sha256
+            dist/${{ matrix.name }}.manifest.json
+            dist/${{ matrix.name }}.sha256
           retention-days: 30
           if-no-files-found: error
 

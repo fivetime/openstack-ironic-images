@@ -1,0 +1,67 @@
+# The Kubernetes node layer: what openstack-magnum-images puts into a VM node
+# image, written into a bare-metal image after the vendor's installer has
+# finished with it.
+#
+# The layer does not carry an installer of its own. The script that installs
+# this stack at first boot on a plain image (magnum-cluster-api's nodeBootstrap
+# feature) has an image mode that writes the same files into a chroot, and
+# that script is what runs here - pinned by tag and checksum, so a bare-metal
+# image and a first-boot node end up byte-for-byte alike. Running a third copy
+# of the same logic would drift within a release or two.
+#
+# Everything the script fetches is listed, with its checksum, in a lock file
+# under lock/<kubernetes-version>/ (see resolve.sh). The build reads only the
+# lock: no version is resolved and no checksum is trusted from the network on
+# the day an image is built.
+name: kubernetes
+
+script:
+  repo: fivetime/magnum-cluster-api
+  path: data/node-bootstrap/install.sh
+  tag: v0.38.2-fivetime.11
+  sha256: c12b576b9679393cbb95d880af7400ad5aee3b982a691b7d0b408f9cbc6e7133
+
+# Component versions default to what the pinned script installs at first boot
+# (its own defaults), so the two paths agree. resolve.sh accepts overrides
+# through the environment (CONTAINERD_VERSION=... and so on) for a deliberate
+# divergence, which the lock then records.
+
+# The runtime handlers the script installs. The Magnum driver creates a
+# RuntimeClass for each of these on every cluster, so an image missing one
+# admits pods it then fails.
+runtimes: crun gvisor kata
+
+# gVisor's platform. VM node images use systrap, which needs no /dev/kvm and
+# so works without nested virtualisation. A physical machine has real KVM,
+# and the kvm platform is markedly faster there. The layer verify reads this
+# back from the image's /etc/containerd/runsc.toml.
+gvisor_platform: kvm
+
+# Distribution packages the stack needs and the installer ISOs do not
+# necessarily carry: kubeadm's preflight refuses to run without conntrack and
+# socat. Resolved per base image (the archive and the versions differ per
+# release) into lock/<k8s>/packages-<image>.yaml, fetched ahead of the build,
+# installed from a directory. `ebtables` is deliberately absent: EL10 no
+# longer ships it and kube-proxy runs on nftables.
+packages:
+  debian: conntrack socat ethtool iptables iproute2 kmod lvm2 logrotate libseccomp2 curl ca-certificates zstd
+  # tar and gzip: the installer unpacks containerd, cni-plugins and crictl
+  # with them, and Rocky's minimal environment ships neither.
+  redhat: conntrack-tools socat ethtool iptables-nft iproute kmod lvm2 logrotate libseccomp curl ca-certificates zstd tar gzip
+
+# Properties the layer adds to the Glance record, on top of the base image's.
+# k8s_version is the one that matters: the Magnum driver reads it to decide
+# that this image already carries the stack and must not run nodeBootstrap.
+# Values come from the manifest, which the layer verify filled in by reading
+# the image, never from this file.
+glance:
+  properties_from_manifest:
+    - k8s_version
+    - containerd_version
+    - runc_version
+    - crun_version
+    - runsc_version
+    - kata_version
+    - kata_handlers
+    - gvisor_platform
+    - images_preloaded

@@ -30,6 +30,10 @@ serial_console: ttyS1
 glance:
   properties:
     hw_firmware_type: uefi
-    os_distro: rocky
+    # Spelled as the magnum-cluster-api driver's `provides` entry, because
+    # Magnum picks the driver by string equality on this value; Ironic does
+    # not read it. `rocky` here meant no Magnum template could ever be
+    # created from the image.
+    os_distro: rockylinux
     os_version: "10"
     # No hypervisor_type: this record is for Ironic.

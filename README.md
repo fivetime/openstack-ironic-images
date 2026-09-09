@@ -34,14 +34,30 @@ Ubuntu 26.04 云盘(`images.linuxcontainers.org`,构建 `20260907_07:42`)上实�
 ## 目录
 
 ```
-build.sh              统一入口: ./build.sh <images/ 下的目录> [变体]
-lib/                  机制: 日志/磁盘/manifest/Glance 上传/重试
+build.sh              统一入口: ./build.sh <images/ 下的目录> [变体] [--layer kubernetes=<版本>]
+lib/                  机制: 日志/磁盘/manifest/Glance 上传/重试/qcow2 覆盖层
 pipelines/
-  distro-iso/         官方安装介质 → 无人值守安装 → 控制台契约校验 → raw
-images/               一份发行版一个目录,里面是声明 + 应答文件
+  distro-iso/         官方安装介质 → 无人值守安装 → (层) → 控制台契约校验 → raw
+images/               一份发行版一个目录,里面是声明 + 应答文件(只描述基础 OS)
+layers/
+  kubernetes/         k8s 节点层: 声明、锁文件、解析与校验脚本(见其 README)
 upstream/sources.yaml 安装 ISO 的 URL/sha256/许可
+upstream/cache/       ISO 与层的产物缓存(不进仓库)
+ci/                   fetch-upstream.sh(ISO)、fetch-layer.sh(层)
 tests/                真机验收清单
 ```
+
+## 两种产物
+
+| 产物 | 名字 | 给谁 |
+| --- | --- | --- |
+| 基础镜像 | `<发行版>-baremetal` | Ironic 直接部署;Magnum 用它时由 driver **首启装** k8s(nodeBootstrap) |
+| 带 k8s 层的镜像 | `<发行版>-baremetal-v<k8s>` | Magnum 裸金属 worker,**预装**了和 VM 节点镜像相同的一套:containerd、crun、gVisor(kvm 平台)、Kata 五个 handler、cni、crictl、kubeadm/kubelet/kubectl、预拉的控制面镜像 |
+
+两者并存,由 Glance 记录里有没有 `k8s_version` 区分:有,driver 不再首启装。层的安装脚本就是
+driver 首启装用的那一份(magnum-cluster-api `data/node-bootstrap/install.sh` 的 image 模式,
+按 tag + sha256 钉住),所以预装和首启装落下来的文件一样。层的每个字节都记在
+`layers/kubernetes/lock/<k8s>/` 里,构建当天不解析、不信任网络。细节见 `layers/kubernetes/README.md`。
 
 ## 用法
 
@@ -49,6 +65,11 @@ tests/                真机验收清单
 ci/fetch-upstream.sh ubuntu-2604-live-server
 BAREMETAL_ADMIN_PASSWORD='...' ./build.sh ubuntu-26.04-baremetal
 IMAGE_STORE=rbd pipelines/distro-iso/push-to-glance.sh dist ubuntu-26.04-baremetal
+
+# 带 k8s 层(锁文件已在仓库里;缓存要先拉)
+sudo ci/fetch-layer.sh kubernetes 1.37.0 ubuntu-26.04-baremetal
+BAREMETAL_ADMIN_PASSWORD='...' sudo ./build.sh ubuntu-26.04-baremetal --layer kubernetes=1.37.0
+IMAGE_STORE=rbd pipelines/distro-iso/push-to-glance.sh dist ubuntu-26.04-baremetal-v1.37.0
 ```
 
 `BAREMETAL_ADMIN_PASSWORD` 是**本地控制台密码**——cloud-init 没跑成时,趴在机器前面用的那个。

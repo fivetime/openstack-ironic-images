@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Single entry point: resolve an image declaration, then run its pipeline.
 #
-#   ./build.sh <image> [variant]
+#   ./build.sh <image> [variant] [--layer kubernetes=<version>]
 #   ./build.sh --list
 #
 # <image> is a directory under images/. The declaration says which pipeline
 # builds it and with what parameters; this script turns that into the
 # environment the pipeline expects and execs it. Pipelines stay runnable on
 # their own, so nothing here is load-bearing for CI.
+#
+# --layer adds a layer from layers/ on top of the installed base image; the
+# result is a separate image named <image>-v<version>, and the base image is
+# kept (built first if it is not in dist/ already). One layer for now.
 
 set -Eeuo pipefail
 
@@ -30,8 +34,21 @@ if [[ "$1" == --list ]]; then
 fi
 [[ "$1" == -h || "$1" == --help ]] && usage
 
-IMAGE=$1
-VARIANT=${2:-}
+IMAGE=$1; shift
+VARIANT=
+LAYER_KUBERNETES=
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --layer)
+            [[ "${2:-}" == kubernetes=* ]] || die "--layer takes kubernetes=<version>"
+            LAYER_KUBERNETES=${2#kubernetes=}
+            [[ "$LAYER_KUBERNETES" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "not a Kubernetes version: $LAYER_KUBERNETES"
+            shift 2 ;;
+        --layer=kubernetes=*) LAYER_KUBERNETES=${1#--layer=kubernetes=}; shift ;;
+        -*) die "unknown option: $1" ;;
+        *) [[ -z "$VARIANT" ]] || die "unexpected argument: $1"; VARIANT=$1; shift ;;
+    esac
+done
 DECL="$REPO_DIR/images/$IMAGE/image.yaml"
 [[ -f "$DECL" ]] || die "no such image declaration: $DECL"
 
@@ -109,6 +126,16 @@ export OUTPUT_DIR=${OUTPUT_DIR:-$REPO_DIR/dist}
 export IMAGE_DIR="$REPO_DIR/images/$IMAGE"
 mkdir -p "$OUTPUT_DIR"
 
-log "image=$IMAGE variant=${VARIANT:-none} pipeline=$PIPELINE"
+# With a layer, the pipeline builds (or reuses) the base image under its
+# own name and produces the layered one under the suffixed name.
+export BASE_IMAGE_NAME=$IMAGE_NAME
+export LAYER_KUBERNETES
+if [[ -n "$LAYER_KUBERNETES" ]]; then
+    [[ -d "$REPO_DIR/layers/kubernetes/lock/$LAYER_KUBERNETES" ]] || \
+        die "no lock for Kubernetes $LAYER_KUBERNETES (layers/kubernetes/resolve.sh, then resolve-packages.sh)"
+    export IMAGE_NAME="${IMAGE_NAME}-v${LAYER_KUBERNETES}"
+fi
+
+log "image=$IMAGE variant=${VARIANT:-none} pipeline=$PIPELINE layer=${LAYER_KUBERNETES:+kubernetes=$LAYER_KUBERNETES}"
 log "name=$IMAGE_NAME output=$OUTPUT_DIR"
 exec bash "$PIPELINE_DIR/build.sh"

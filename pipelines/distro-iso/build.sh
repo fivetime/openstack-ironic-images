@@ -17,13 +17,18 @@
 #   install   QEMU/OVMF boots the ISO with that CD and a blank disk; the
 #             installer powers the machine off when it is done, and the
 #             QEMU process exiting is the signal
+#   layer     (with LAYER_KUBERNETES) copy the base disk and write the
+#             Kubernetes node stack into it from the layer's cache, in a
+#             chroot with no network - see layers/kubernetes/
 #   verify    mount the result and check the console contract, the
 #             initramfs and the firmware - the three things that are
-#             invisible on a VM and fatal on hardware
+#             invisible on a VM and fatal on hardware; with a layer, its
+#             own checks follow
 #   manifest
 #
 # INSTALL_ONLY=1 stops after the install (no verify), VERIFY_ONLY=1 runs
-# verify + manifest against the disk already in OUTPUT_DIR.
+# verify + manifest against the disk already in OUTPUT_DIR. With a layer,
+# a base disk already in OUTPUT_DIR is reused rather than reinstalled.
 #
 # Must run as root (loop mounts) on a host with /dev/kvm.
 
@@ -38,6 +43,8 @@ source "$LIB_DIR/disk.sh"
 source "$LIB_DIR/manifest.sh"
 
 IMAGE_NAME=${IMAGE_NAME:?Set IMAGE_NAME}
+BASE_IMAGE_NAME=${BASE_IMAGE_NAME:-$IMAGE_NAME}
+LAYER_KUBERNETES=${LAYER_KUBERNETES:-}
 IMAGE_DIR=${IMAGE_DIR:?Set IMAGE_DIR (the images/<name> directory)}
 OUTPUT_DIR=${OUTPUT_DIR:?Set OUTPUT_DIR for the build artifacts}
 INSTALLER=${INSTALLER:-subiquity}
@@ -85,6 +92,17 @@ make_work_dir work_dir
 raw="$OUTPUT_DIR/$IMAGE_NAME.raw"
 logs="$OUTPUT_DIR/$IMAGE_NAME.install"
 mnt="$work_dir/mnt"
+# With a layer the installer produces the base image under its own name;
+# the layer stage copies it and works on the copy. The base is a product
+# in its own right (the plain bare-metal image) and is kept.
+base_raw="$OUTPUT_DIR/$BASE_IMAGE_NAME.raw"
+base_logs="$OUTPUT_DIR/$BASE_IMAGE_NAME.install"
+if [[ -n "$LAYER_KUBERNETES" ]]; then
+    LAYER_DIR="$REPO_DIR/layers/kubernetes"
+    LAYER_LOCK="$LAYER_DIR/lock/$LAYER_KUBERNETES"
+    LAYER_CACHE="$CACHE_DIR/layers/kubernetes/$LAYER_KUBERNETES"
+    [[ -d "$LAYER_LOCK" ]] || die "no lock for Kubernetes $LAYER_KUBERNETES"
+fi
 
 # The serial unit number grub wants is the digit in the tty name.
 serial_unit=${SERIAL_CONSOLE##*S}
@@ -255,6 +273,98 @@ install_run() {
     done
     wait "$qemu_pid" || true
     log "   installer powered off after $(( $(date +%s) - t0 ))s"
+}
+
+# -------------------------------------------------------------- layer
+#
+# The installer that the Magnum driver runs at first boot on a plain image
+# (magnum-cluster-api, data/node-bootstrap/install.sh) has an image mode
+# that writes the same files into a chroot. That script - pinned by tag and
+# checksum in layers/kubernetes/layer.yaml - is what runs here, so a
+# bare-metal image with the layer and a first-boot node end up alike.
+#
+# The chroot has no network (unshare -n): the mirror is the layer cache on
+# file://, the distribution packages and the control-plane images come from
+# the same cache, and every one of those was fetched against the lock's
+# checksums by ci/fetch-layer.sh. An artifact the lock does not name cannot
+# get in, because there is nowhere to get it from.
+layer_apply() {
+    local k8s=$LAYER_KUBERNETES
+    log "== layer: kubernetes $k8s onto $BASE_IMAGE_NAME -> $IMAGE_NAME"
+    [[ -f "$base_raw" ]] || die "no base image to layer onto: $base_raw"
+    [[ -f "$LAYER_CACHE/install.sh" && -d "$LAYER_CACHE/mirror" && -d "$LAYER_CACHE/images" ]] || \
+        die "layer cache incomplete; run ci/fetch-layer.sh kubernetes $k8s $BASE_IMAGE_NAME"
+    [[ -d "$LAYER_CACHE/packages/$BASE_IMAGE_NAME" ]] || \
+        die "no packages fetched for $BASE_IMAGE_NAME; run ci/fetch-layer.sh kubernetes $k8s $BASE_IMAGE_NAME"
+    local sha
+    sha=$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["script"]["sha256"])' "$LAYER_LOCK/artifacts.yaml")
+    echo "$sha  $LAYER_CACHE/install.sh" | sha256sum -c --quiet - || die "the cached install.sh does not match the lock"
+
+    log "   copying $base_raw"
+    cp --sparse=always --reflink=auto "$base_raw" "$raw.part"
+    mv "$raw.part" "$raw"
+
+    local loop root layer_log="$OUTPUT_DIR/$IMAGE_NAME.layer.log"
+    disk_attach loop "$raw" -P
+    root=$(disk_find_root_partition "$loop" "$mnt") || die "no root filesystem in $raw"
+    log "   root partition: $root"
+    # Should the install die, a process it started may still hold the root
+    # (a containerd it spawned for the image import, say); the plain unmount
+    # the helper registered would then find the tree busy and give up, and
+    # the loop device would be detached from under a live mount. Kill what
+    # holds it and unmount first (LIFO: this runs before that handler).
+    on_cleanup "mountpoint -q '$mnt' && { fuser -k -m '$mnt' >/dev/null 2>&1; sleep 1; umount -R -l '$mnt'; } || true"
+
+    # The component versions the script installs, as the lock recorded them.
+    local -a env_kv
+    mapfile -t env_kv < <(python3 -c 'import sys,yaml
+d=yaml.safe_load(open(sys.argv[1]))
+for k,v in d["components"].items(): print(f"{k}={v}")' "$LAYER_LOCK/artifacts.yaml")
+    local platform runtimes
+    platform=$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["gvisor_platform"])' "$LAYER_DIR/layer.yaml")
+    runtimes=$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["runtimes"])' "$LAYER_DIR/layer.yaml")
+
+    # The API binds and the cache live in a private mount namespace that
+    # ends with the install: nothing to unmount afterwards, nothing left
+    # behind on failure, and two builds sharing one cache directory cannot
+    # touch each other's view of it. Only the root mount and the loop
+    # device are the parent's, and the cleanup stack already owns those.
+    # No network namespace either (-n): the mirror is file://, and an
+    # artifact the lock does not name has nowhere to come from.
+    log "   installing in the chroot (private mount namespace, no network); log: $layer_log"
+    if ! unshare -m -n --propagation private bash -c '
+            set -Eeuo pipefail
+            mnt=$1; cache=$2; shift 2
+            for d in proc sys dev dev/pts; do mount --bind "/$d" "$mnt/$d"; done
+            mkdir -p "$mnt/run/layer"
+            mount --bind -o ro "$cache" "$mnt/run/layer"
+            exec chroot "$mnt" env -i \
+                PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root TERM=dumb \
+                NODE_BOOTSTRAP_MODE=image NODE_BOOTSTRAP_CONF=/dev/null \
+                NODE_BOOTSTRAP_MIRROR=file:///run/layer/mirror \
+                NODE_BOOTSTRAP_IMAGES_DIR=/run/layer/images \
+                "$@" bash /run/layer/install.sh
+        ' _ "$mnt" "$LAYER_CACHE" \
+            K8S_VERSION="$k8s" "${env_kv[@]}" \
+            GVISOR_PLATFORM="$platform" NODE_BOOTSTRAP_RUNTIMES="$runtimes" \
+            NODE_BOOTSTRAP_PKG_DIR="/run/layer/packages/$BASE_IMAGE_NAME" \
+            >"$layer_log" 2>&1; then
+        tail -20 "$layer_log" >&2
+        die "the layer install failed; see $layer_log"
+    fi
+    grep -E '^\[node-bootstrap\] done' "$layer_log" >&2 || die "the layer install did not report completion"
+
+    # Nothing of the build stays in the image: the cache mount point, the
+    # runtime directories the script created for its temporary containerd,
+    # the import log. /run and /tmp are tmpfs on the deployed machine, but
+    # the verify stage checks the disk, and so should find them clean.
+    rmdir "$mnt/run/layer"
+    rm -rf "$mnt/run/containerd" "$mnt/tmp/containerd-import.log" "$mnt"/tmp/tmp.*
+    sync
+    # Let go before verify re-attaches the image.
+    umount "$mnt" || die "could not unmount $mnt after the layer; the image may be incomplete"
+    losetup -d "$loop" 2>/dev/null || { sleep 1; losetup -d "$loop"; }
+    log "   layer applied"
 }
 
 # ------------------------------------------------------------- verify
@@ -599,6 +709,18 @@ verify_image() {
         "a tenant would find the operator's agent on the machine they rent" \
         no_guest_agents "$mnt"
 
+    # 12+ The layer, if there is one: its own checks, its own verdict lines,
+    #     and the manifest fields it read back from the image.
+    local layer_failed=0
+    LAYER_MANIFEST='{}'
+    if [[ -n "$LAYER_KUBERNETES" ]]; then
+        log "   -- layer: kubernetes $LAYER_KUBERNETES --"
+        local out
+        out=$("$LAYER_DIR/verify.sh" "$mnt" "$LAYER_KUBERNETES") || layer_failed=$?
+        LAYER_MANIFEST=$(sed -n 's/^manifest: //p' <<<"$out")
+        [[ -n "$LAYER_MANIFEST" ]] || { LAYER_MANIFEST='{}'; layer_failed=$((layer_failed + 1)); warn "layer verify emitted no manifest"; }
+    fi
+
     # Let go of the image before anything else can fail: the cleanup stack
     # unwinds in the right order, but a mount that is still there when the
     # loop device goes is how a built image gets destroyed.
@@ -608,9 +730,9 @@ verify_image() {
     fi
     umount "$mnt" || warn "could not unmount $mnt - the work directory will not clean up"
 
-    ((_checks_failed == 0)) || \
-        die "verify failed ($_checks_failed of 11); the image is not usable on hardware"
-    log "   11/11 passed"
+    ((_checks_failed == 0 && layer_failed == 0)) || \
+        die "verify failed ($_checks_failed of 11 base checks, $layer_failed layer checks); the image is not usable"
+    log "   11/11 passed${LAYER_KUBERNETES:+, layer checks passed}"
 }
 
 # initrd_list <rootfs> <path-inside> — the file list of an initramfs.
@@ -654,17 +776,34 @@ write_manifest() {
         --arg installer "$INSTALLER" \
         --arg serial "$SERIAL_CONSOLE" \
         --arg user "$ADMIN_USER" \
+        --arg base "$BASE_IMAGE_NAME" \
         --argjson qga "$([[ -n "${GUEST_AGENTS:-}" ]] && echo true || echo false)" \
+        --argjson layer "${LAYER_MANIFEST:-{\}}" \
         '{disk: $disk, disk_format: $fmt, target: "baremetal",
           source_iso: $iso, installer: $installer,
-          serial_console: $serial, admin_user: $user,
-          qemu_guest_agent: $qga, baremetal_firmware: true}')" >/dev/null
+          serial_console: $serial, admin_user: $user, base_image: $base,
+          qemu_guest_agent: $qga, baremetal_firmware: true} + $layer')" >/dev/null
     log "== done: $out"
 }
 
 if [[ -z "$VERIFY_ONLY" ]]; then
-    seed_iso
-    install_run
+    if [[ -n "$LAYER_KUBERNETES" ]]; then
+        # The installer writes the base image; the layer works on a copy.
+        if [[ -f "$base_raw" ]]; then
+            log "== install: reusing the base image already in $OUTPUT_DIR ($BASE_IMAGE_NAME)"
+        else
+            layered_raw=$raw; layered_logs=$logs
+            raw=$base_raw; logs=$base_logs
+            seed_iso
+            install_run
+            raw=$layered_raw; logs=$layered_logs
+        fi
+        [[ -n "$INSTALL_ONLY" ]] && exit 0
+        layer_apply
+    else
+        seed_iso
+        install_run
+    fi
 fi
 if [[ -n "$INSTALL_ONLY" ]]; then
     exit 0
