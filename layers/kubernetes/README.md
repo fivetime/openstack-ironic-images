@@ -83,8 +83,10 @@ BAREMETAL_ADMIN_PASSWORD='...' sudo ./build.sh ubuntu-26.04-baremetal --layer ku
 要过三关,每一关都是 2026-09-09 实测踩出来的:
 
 1. **串口**:镜像的 grub/getty 在 `ttyS1`(HPE iLO),Nova 虚机只有 `ttyS0`,grub 找不到
-   `serial --unit=1` 会停在菜单,控制台也一片空白。测试副本要把 `99-baremetal.cfg` 里的
-   `ttyS1`/`--unit=1` 改成 `ttyS0`/`--unit=0` 再 `update-grub`(或直接建一份 ttyS0 变体)。
+   `serial --unit=1` 会停在菜单,控制台也一片空白。正路是按 `image.yaml` 的 `variants` 建一份
+   ttyS0 变体;图快在 loop 挂载的 chroot 里改 `99-baremetal.cfg` 再 `update-grub` 也行,但
+   **改完必须核对 `grub.cfg` 里是 `root=UUID=`**——chroot 里的 grub-probe 有时会把根写成
+   `root=/dev/loop0p2`,节点就在 initramfs 里永远等那块盘(2026-09-09 踩过)。
 2. **config drive**:镜像的 cloud-init 只认 `[ConfigDrive, NoCloud, None]`,不找 metadata 服务,
    所以 Glance 记录要 `img_config_drive=mandatory`。而且要 **`hw_machine_type=q35`**:计算节点是
    QEMU 8.2,默认 i440fx 挂的 IDE 光驱这台 7.0 内核根本探测不到(`ata_piix` 找不到 ATAPI 设备,
