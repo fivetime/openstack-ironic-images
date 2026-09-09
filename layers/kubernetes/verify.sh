@@ -136,7 +136,14 @@ chk "modules-load, sysctl and CNI plugins in place" "kubeadm preflight fails on 
 pkgs_ok() { [[ -x "$ROOT/usr/sbin/conntrack" || -x "$ROOT/usr/bin/conntrack" ]] && [[ -x "$ROOT/usr/bin/socat" ]] && [[ -x "$ROOT/usr/sbin/ethtool" || -x "$ROOT/usr/bin/ethtool" ]]; }
 chk "conntrack, socat, ethtool installed" "kubeadm preflight refuses to run" pkgs_ok
 
-# 11 Nothing of the build left behind in the image.
+# 11 No swap: the kubelet refuses to start with it (failSwapOn), and the
+#    installer's default layout on Ubuntu writes /swap.img plus an fstab
+#    line. The layer's installer comments the line out and removes the
+#    file; a stray one here means kubeadm init times out at first boot.
+swap_ok() { ! grep -qE '^[^#]\S*\s+\S+\s+swap\s' "$ROOT/etc/fstab" && [[ ! -e "$ROOT/swap.img" && ! -e "$ROOT/swapfile" ]]; }
+chk "no swap in fstab, no swap file" "the kubelet exits at start and kubeadm init times out" swap_ok
+
+# 12 Nothing of the build left behind in the image.
 leftovers_ok() { [[ ! -e "$ROOT/run/layer" && ! -e "$ROOT/tmp/containerd-import.log" && ! -e "$ROOT/run/containerd/containerd.sock" ]]; }
 chk "no build leftovers (/run/layer, import log, stale socket)" "the image carries the builder's state" leftovers_ok
 

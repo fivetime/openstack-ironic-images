@@ -64,7 +64,7 @@ the day it ran.
 
 ## The console contract (what verify enforces)
 
-Eleven checks, each printing its own verdict - a checker that only speaks
+Twelve checks, each printing its own verdict - a checker that only speaks
 when it is unhappy cannot be told apart from one that did not run. A
 failure is a build failure: no image, no manifest, no upload.
 
@@ -74,6 +74,7 @@ failure is a build failure: no image, no manifest, no upload.
     ok   serial-getty@ttyS1 enabled
     ok   early-boot storage drivers (ahci smartpqi hpsa megaraid_sas mpt3sas nvme)
     ok   early-boot console drivers (hid_generic usbhid mgag200 ast)
+    ok   early-boot config-drive drivers (sr_mod isofs)
     ok   linux-firmware landed (bnx2x blobs present)
     ok   template identity (empty machine-id, no ssh host keys)
     ok   cloud-init runs and uses ConfigDrive (growth and networking on)
@@ -121,6 +122,20 @@ about an image that was actually fine, or actually broken:
   because a bare `[[ ]]` that is not a function's last statement
   decides nothing. Both were caught by re-running the check against the
   known-bad image and refusing to believe a green result.
+- **Under Nova the config drive was never found.** Ironic writes the
+  config drive as a partition of the root disk, so the DL360 acceptance
+  never noticed. Nova attaches it as a CD-ROM on the default i440fx
+  machine's IDE bus, and this image's 7.0 kernel does not detect that
+  device on a QEMU 8.2 host: `ata_piix` probes the channel and finds no
+  ATAPI drive, `lsblk` shows only `vda`, and cloud-init boots with
+  DataSourceNone - no network config, no user-data, hostname `baremetal`
+  (2026-09-09, a Magnum test cluster that never formed). A 6.8 cloud
+  image on the same host sees the drive, and the same image under QEMU
+  10.2 sees it too, so it is the kernel/QEMU pair. With
+  `hw_machine_type=q35` on the Glance record the CD-ROM is SATA and is
+  found. The CD-ROM drivers are additionally pinned into the initramfs
+  and checked (6b), which covers a kernel where they are modules; it did
+  not cover this.
 - **cloud-init's growpart module only calls `growpart`**; on RPM distros
   the tool is a separate package, and the first Rocky deploy kept a
   10 GB root on a 372 GB disk with nothing but a warning in the log.

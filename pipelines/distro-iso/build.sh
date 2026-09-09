@@ -683,6 +683,17 @@ verify_image() {
         "the emergency shell cannot be read or typed into" \
         early_boot_drivers "$mnt" "$list" hid_generic:HID_GENERIC usbhid:USB_HID \
             mgag200:DRM_MGAG200 ast:DRM_AST
+    # 6b A config drive on a CD-ROM is seen at early boot. Ironic writes the
+    #    config drive as a partition of the root disk; Nova offers it as a
+    #    CD-ROM, and ds-identify runs as a systemd generator, before udev
+    #    coldplug would load a driver that is not built in. (The other half
+    #    of that story is the machine type: Nova's default i440fx IDE
+    #    CD-ROM is invisible to the 7.0 kernel on a QEMU 8.2 host; a test
+    #    record needs hw_machine_type=q35. That is a Glance property, not
+    #    an image property, so nothing here can check it.)
+    chk "early-boot config-drive drivers (sr_mod isofs)" \
+        "a CD-ROM config drive is missed and cloud-init runs with no data" \
+        early_boot_drivers "$mnt" "$list" sr_mod:BLK_DEV_SR isofs:ISO9660_FS
     # 7 Firmware. "The directory is not empty" does not discriminate: the
     #   cloud images ship regulatory.db there and nothing else.
     chk "linux-firmware landed (bnx2x blobs present)" \
@@ -731,8 +742,8 @@ verify_image() {
     umount "$mnt" || warn "could not unmount $mnt - the work directory will not clean up"
 
     ((_checks_failed == 0 && layer_failed == 0)) || \
-        die "verify failed ($_checks_failed of 11 base checks, $layer_failed layer checks); the image is not usable"
-    log "   11/11 passed${LAYER_KUBERNETES:+, layer checks passed}"
+        die "verify failed ($_checks_failed of 12 base checks, $layer_failed layer checks); the image is not usable"
+    log "   12/12 passed${LAYER_KUBERNETES:+, layer checks passed}"
 }
 
 # initrd_list <rootfs> <path-inside> — the file list of an initramfs.

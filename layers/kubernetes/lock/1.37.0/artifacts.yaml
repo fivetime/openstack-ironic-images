@@ -3,11 +3,11 @@
 layer: kubernetes
 kubernetes: 1.37.0
 arch: amd64
-resolved_at: '2026-09-09T18:39:17Z'
+resolved_at: '2026-09-09T22:08:27Z'
 script:
-  url: https://raw.githubusercontent.com/fivetime/magnum-cluster-api/v0.38.2-fivetime.11/data/node-bootstrap/install.sh
-  tag: v0.38.2-fivetime.11
-  sha256: c12b576b9679393cbb95d880af7400ad5aee3b982a691b7d0b408f9cbc6e7133
+  url: https://raw.githubusercontent.com/fivetime/magnum-cluster-api/v0.38.2-fivetime.12/data/node-bootstrap/install.sh
+  tag: v0.38.2-fivetime.12
+  sha256: 4767d275eaa4c3d14ee2d5a03ad2008cd1cf8174ca66f59d57b8a164c85c219f
 components:
   CONTAINERD_VERSION: 2.3.5
   RUNC_VERSION: 1.5.1

@@ -2,7 +2,7 @@
 # The build reads this file only; regenerate to move a version.
 layer: kubernetes
 kubernetes: 1.37.0
-resolved_at: '2026-09-09T18:39:17Z'
+resolved_at: '2026-09-09T22:08:27Z'
 images:
 - ref: registry.k8s.io/coredns/coredns:v1.14.6
   digest: sha256:900f9c109f7a33545d3c811516e8376df9019147b750f5ce3e254468769176ea

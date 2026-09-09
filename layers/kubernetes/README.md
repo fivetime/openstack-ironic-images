@@ -76,3 +76,19 @@ BAREMETAL_ADMIN_PASSWORD='...' sudo ./build.sh ubuntu-26.04-baremetal --layer ku
 ```
 
 基础 raw 已在 `dist/` 时直接复用,否则先装基础再叠层。CI 的 `k8s_versions` 输入按版本各加一行矩阵。
+
+## 在 KVM 上验证一张裸金属镜像(Nova 门禁的前提)
+
+真正的消费方是 Ironic + Magnum 裸金属 nodegroup,但一张带层的镜像想先在虚机上开一次,
+要过三关,每一关都是 2026-09-09 实测踩出来的:
+
+1. **串口**:镜像的 grub/getty 在 `ttyS1`(HPE iLO),Nova 虚机只有 `ttyS0`,grub 找不到
+   `serial --unit=1` 会停在菜单,控制台也一片空白。测试副本要把 `99-baremetal.cfg` 里的
+   `ttyS1`/`--unit=1` 改成 `ttyS0`/`--unit=0` 再 `update-grub`(或直接建一份 ttyS0 变体)。
+2. **config drive**:镜像的 cloud-init 只认 `[ConfigDrive, NoCloud, None]`,不找 metadata 服务,
+   所以 Glance 记录要 `img_config_drive=mandatory`。而且要 **`hw_machine_type=q35`**:计算节点是
+   QEMU 8.2,默认 i440fx 挂的 IDE 光驱这台 7.0 内核根本探测不到(`ata_piix` 找不到 ATAPI 设备,
+   6.8 内核的云镜像同机能看到),q35 的 SATA 光驱才行。
+3. **调度**:`hypervisor_type=qemu` 才会落到 KVM 节点(生产记录刻意不带,见 push-to-glance.sh)。
+
+加上 `k8s_version=<版本>`,Magnum driver 就会跳过 nodeBootstrap,直接用镜像里的栈。

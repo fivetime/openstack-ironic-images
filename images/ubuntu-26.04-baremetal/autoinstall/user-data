@@ -94,6 +94,20 @@ autoinstall:
       if [ -f /target/etc/initramfs-tools/initramfs.conf ]; then
         sed -i 's/^MODULES=.*/MODULES=most/' /target/etc/initramfs-tools/initramfs.conf
       fi
+    # 2b) The config drive as a CD-ROM. Ironic writes it as a partition on
+    #     the root disk; Nova (the build gate, or a baremetal flavor tried
+    #     on a hypervisor) offers it as a CD-ROM, which has to be visible
+    #     at early boot because cloud-init's ds-identify runs as a systemd
+    #     generator. On this kernel the drivers are built in, so this is
+    #     insurance for a kernel where they are not; the verify stage checks
+    #     either way. Note what it does NOT fix: on a QEMU 8.2 hypervisor the
+    #     i440fx IDE CD-ROM Nova attaches by default is not detected by this
+    #     7.0 kernel at all (ata_piix probes the channel, finds no ATAPI
+    #     device; a 6.8 cloud image on the same host sees it). A Glance
+    #     record for testing under Nova needs hw_machine_type=q35, whose
+    #     SATA CD-ROM works (2026-09-09).
+    - |
+      printf 'sr_mod\ncdrom\nisofs\n' >> /target/etc/initramfs-tools/modules
     - curtin in-target --target=/target -- update-initramfs -u -k all
     - curtin in-target --target=/target -- update-grub
     - curtin in-target --target=/target -- systemctl enable serial-getty@@@SERIAL_CONSOLE@@.service
