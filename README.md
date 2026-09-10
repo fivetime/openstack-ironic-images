@@ -64,13 +64,32 @@ driver 首启装用的那一份(magnum-cluster-api `data/node-bootstrap/install.
 ```bash
 ci/fetch-upstream.sh ubuntu-2604-live-server
 BAREMETAL_ADMIN_PASSWORD='...' ./build.sh ubuntu-26.04-baremetal
-IMAGE_STORE=rbd pipelines/distro-iso/push-to-glance.sh dist ubuntu-26.04-baremetal
+IMAGE_STORE=s3 pipelines/distro-iso/push-to-glance.sh dist ubuntu-26.04-baremetal
 
 # 带 k8s 层(锁文件已在仓库里;缓存要先拉)
 sudo ci/fetch-layer.sh kubernetes 1.37.0 ubuntu-26.04-baremetal
 BAREMETAL_ADMIN_PASSWORD='...' sudo ./build.sh ubuntu-26.04-baremetal --layer kubernetes=1.37.0
-IMAGE_STORE=rbd pipelines/distro-iso/push-to-glance.sh dist ubuntu-26.04-baremetal-v1.37.0
+IMAGE_STORE=s3 pipelines/distro-iso/push-to-glance.sh dist ubuntu-26.04-baremetal-v1.37.0
 ```
+
+镜像走 **s3 后端**而不是 rbd:Ironic 把整个镜像写进物理盘,RBD 的写时复制在这里一分钱也省不下;
+而且只有 s3 后端能给出一个明文 http 地址,Metal3 的 baremetal-operator 只认这个
+(它的准入 webhook 直接拒 `glance://`,而且取镜像时不带任何凭据)。推完这一步会把该对象——
+只有该对象,不是整个桶——设成 `public-read`,再用不带凭据的 HEAD 验一遍。要 `S3_ENDPOINT`
+/ `S3_BUCKET` / `S3_ACCESS_KEY` / `S3_SECRET_KEY`(和 glance-api 用的同一套凭据,取自
+`glance-etc` secret 的 `[s3]` 段);没设就只是警告,镜像照样在桶里,但 BMO 取不到。
+补设已推镜像的 ACL:`pipelines/distro-iso/publish-s3-acl.sh <image-id>`。机制见 `lib/s3.sh`。
+
+**这些镜像必须是 private**,`IMAGE_STORE=s3` 配 `VISIBILITY=public` 会被直接拒掉。原因:
+s3 后端的 location URI 长这样 `s3://<access-key>:<secret-key>@host/bucket/<image-id>`,
+而本集群 `show_image_direct_url = true`(Nova 的 RBD 写时复制克隆要靠它,见
+`nova/image/glance.py:283`——`show_multiple_locations` 关着时 Nova 把 `direct_url`
+当成唯一的 location)。Glance 的读路径**没有**策略闸拦这个字段
+(`glance/api/v2/images.py:1795`,序列化器只是防御性地吞一个没人抛的 Forbidden),
+2026-09-10 用临时 reader 账号实测:`direct_url` 原样返回给普通租户。
+同时存在 rbd 副本的镜像是安全的——`[s3] weight = 0`,`sort_image_locations` 会挑
+`rbd://`,那个不带密钥;但推送流程会删掉 rbd 副本,于是 s3 成了唯一 location。
+镜像 private 不影响用途:Metal3 和 Ironic 都是直接从 RGW 走 HTTP 取,不经 Glance。
 
 `BAREMETAL_ADMIN_PASSWORD` 是**本地控制台密码**——cloud-init 没跑成时,趴在机器前面用的那个。
 不进仓库,CI 从 secret 注入。`VERIFY_ONLY=1` 只重跑校验,`INSTALL_ONLY=1` 只装不校验,

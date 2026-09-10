@@ -247,9 +247,22 @@ jobs:
           OS_REGION_NAME: ${{ secrets.OS_REGION_NAME }}
           OS_IDENTITY_API_VERSION: '3'
           OS_INTERFACE: ${{ vars.OS_INTERFACE || 'public' }}
-          IMAGE_STORE: ${{ vars.GLANCE_IMAGE_STORE || 'rbd' }}
-          VISIBILITY: ${{ vars.GLANCE_VISIBILITY || 'public' }}
+          # s3, not rbd: these are bare-metal disks. RBD's copy-on-write
+          # clone buys nothing when Ironic writes the whole image to a
+          # physical disk, and only the S3 store can hand out the plain
+          # http URL that Metal3's baremetal-operator insists on.
+          IMAGE_STORE: ${{ vars.GLANCE_IMAGE_STORE || 's3' }}
+          # private, not public: an S3-only image's direct_url carries the
+          # store's access key and secret, and Glance hands that field to
+          # anyone who can see the image. Nothing needs these tenant-visible.
+          VISIBILITY: ${{ vars.GLANCE_VISIBILITY || 'private' }}
           IMAGE_IMPORT_TIMEOUT: '1800'
+          # Without these the object lands in the bucket but stays
+          # credential-only; the push warns and carries on. See lib/s3.sh.
+          S3_ENDPOINT: ${{ vars.GLANCE_S3_ENDPOINT }}
+          S3_BUCKET: ${{ vars.GLANCE_S3_BUCKET }}
+          S3_ACCESS_KEY: ${{ secrets.GLANCE_S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.GLANCE_S3_SECRET_KEY }}
         run: |
           if ! command -v openstack >/dev/null; then
             python3 -m venv "$RUNNER_TEMP/osc"
