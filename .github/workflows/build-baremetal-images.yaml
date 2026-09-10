@@ -247,18 +247,22 @@ jobs:
           OS_REGION_NAME: ${{ secrets.OS_REGION_NAME }}
           OS_IDENTITY_API_VERSION: '3'
           OS_INTERFACE: ${{ vars.OS_INTERFACE || 'public' }}
-          # s3, not rbd: these are bare-metal disks. RBD's copy-on-write
-          # clone buys nothing when Ironic writes the whole image to a
-          # physical disk, and only the S3 store can hand out the plain
-          # http URL that Metal3's baremetal-operator insists on.
-          IMAGE_STORE: ${{ vars.GLANCE_IMAGE_STORE || 's3' }}
-          # private, not public: an S3-only image's direct_url carries the
-          # store's access key and secret, and Glance hands that field to
-          # anyone who can see the image. Nothing needs these tenant-visible.
-          VISIBILITY: ${{ vars.GLANCE_VISIBILITY || 'private' }}
+          # rbd. Ironic fetches these itself, and it resolves glance://
+          # references natively, so there is no reason to publish the image
+          # a second time outside Glance. The S3 store exists as a fallback
+          # for a baremetal-operator that has not been taught the scheme -
+          # see lib/s3.sh - but it costs a second copy of every image and an
+          # anonymously readable object, so it is not the default.
+          IMAGE_STORE: ${{ vars.GLANCE_IMAGE_STORE || 'rbd' }}
+          # public is safe for an rbd image: its direct_url is an rbd:// URI
+          # with no credentials in it. It is also what lets Ironic read the
+          # image at all, since is_image_available only passes a private one
+          # when the conductor's own project owns it.
+          VISIBILITY: ${{ vars.GLANCE_VISIBILITY || 'public' }}
           IMAGE_IMPORT_TIMEOUT: '1800'
-          # Without these the object lands in the bucket but stays
-          # credential-only; the push warns and carries on. See lib/s3.sh.
+          # Only used when GLANCE_IMAGE_STORE is set to s3. Without them the
+          # object lands in the bucket but stays credential-only; the push
+          # warns and carries on. See lib/s3.sh.
           S3_ENDPOINT: ${{ vars.GLANCE_S3_ENDPOINT }}
           S3_BUCKET: ${{ vars.GLANCE_S3_BUCKET }}
           S3_ACCESS_KEY: ${{ secrets.GLANCE_S3_ACCESS_KEY }}

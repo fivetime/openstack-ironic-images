@@ -64,23 +64,34 @@ driver 首启装用的那一份(magnum-cluster-api `data/node-bootstrap/install.
 ```bash
 ci/fetch-upstream.sh ubuntu-2604-live-server
 BAREMETAL_ADMIN_PASSWORD='...' ./build.sh ubuntu-26.04-baremetal
-IMAGE_STORE=s3 pipelines/distro-iso/push-to-glance.sh dist ubuntu-26.04-baremetal
+IMAGE_STORE=rbd pipelines/distro-iso/push-to-glance.sh dist ubuntu-26.04-baremetal
 
 # 带 k8s 层(锁文件已在仓库里;缓存要先拉)
 sudo ci/fetch-layer.sh kubernetes 1.37.0 ubuntu-26.04-baremetal
 BAREMETAL_ADMIN_PASSWORD='...' sudo ./build.sh ubuntu-26.04-baremetal --layer kubernetes=1.37.0
-IMAGE_STORE=s3 pipelines/distro-iso/push-to-glance.sh dist ubuntu-26.04-baremetal-v1.37.0
+IMAGE_STORE=rbd pipelines/distro-iso/push-to-glance.sh dist ubuntu-26.04-baremetal-v1.37.0
 ```
 
-镜像走 **s3 后端**而不是 rbd:Ironic 把整个镜像写进物理盘,RBD 的写时复制在这里一分钱也省不下;
-而且只有 s3 后端能给出一个明文 http 地址,Metal3 的 baremetal-operator 只认这个
-(它的准入 webhook 直接拒 `glance://`,而且取镜像时不带任何凭据)。推完这一步会把该对象——
-只有该对象,不是整个桶——设成 `public-read`,再用不带凭据的 HEAD 验一遍。要 `S3_ENDPOINT`
-/ `S3_BUCKET` / `S3_ACCESS_KEY` / `S3_SECRET_KEY`(和 glance-api 用的同一套凭据,取自
+**为什么 `IMAGE_STORE=rbd`。** 曾经有一段时间(2026-09-10 当天)这里写的是 `s3`:Metal3 的
+baremetal-operator 准入 webhook 只认 http/https/oci,拒 `glance://`,取镜像时也不带任何凭据,
+所以镜像得在 Glance 之外再有一个明文 http 地址——rbd 后端给不出(只会产生 `rbd://`),只有 s3 能。
+
+**同日这个理由就不成立了**:给 BMO 打了补丁让它接受 `glance://`(`fivetime/baremetal-operator`,
+分支 `build/v0.14.0-glance`,已上线并端到端验过)。BMO 根本不下载镜像,只把 `spec.image.url` 转交
+Ironic,而 Ironic 本来就认 Glance 引用。所以裸金属镜像留在 **rbd** 就行:不用推第二份、不用开放匿名读、
+不用担心密钥泄露。细节和端到端记录见 `OpenStack-Helm-Deploy.md` §11.1.15。
+
+⚠ 走 `glance://` 时镜像要能被 conductor 读到:Ironic 的 `is_image_available` 对 public/community 直接放行,
+对 private 只放行 `image_owner == conductor_project_id`(本集群 conductor 是 `service` 项目 `7e92eb25…`)。
+rbd 后端的镜像设成 public 是安全的——`direct_url` 是 `rbd://`,不含任何凭据。
+
+下面这套 s3 + ACL 因此降级成**备选**:BMO 未打补丁时的退路,也是标准 Ironic 用户会走的路。机制完好,
+命令照常可用。推完会把该对象——只有该对象,不是整个桶——设成 `public-read`,再用不带凭据的 HEAD 验一遍。
+要 `S3_ENDPOINT` / `S3_BUCKET` / `S3_ACCESS_KEY` / `S3_SECRET_KEY`(和 glance-api 用的同一套凭据,取自
 `glance-etc` secret 的 `[s3]` 段);没设就只是警告,镜像照样在桶里,但 BMO 取不到。
 补设已推镜像的 ACL:`pipelines/distro-iso/publish-s3-acl.sh <image-id>`。机制见 `lib/s3.sh`。
 
-**这些镜像必须是 private**,`IMAGE_STORE=s3` 配 `VISIBILITY=public` 会被直接拒掉。原因:
+**走 s3 这条路的镜像必须是 private**,`IMAGE_STORE=s3` 配 `VISIBILITY=public` 会被直接拒掉。原因:
 s3 后端的 location URI 长这样 `s3://<access-key>:<secret-key>@host/bucket/<image-id>`,
 而本集群 `show_image_direct_url = true`(Nova 的 RBD 写时复制克隆要靠它,见
 `nova/image/glance.py:283`——`show_multiple_locations` 关着时 Nova 把 `direct_url`
