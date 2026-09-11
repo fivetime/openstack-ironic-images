@@ -116,7 +116,7 @@ s3 后端的 location URI 长这样 `s3://<access-key>:<secret-key>@host/bucket/
 | `rocky-10-baremetal` | kickstart | CI 构建、十条校验全过、串口登录实测、已推 Glance、**DL360 Gen10 真机验收通过(2026-09-08,第二版镜像)** |
 | `ubuntu-26.04-baremetal-v1.37.0` | 上者 + k8s 层 | 本地构建,12 条基础 + 12 条层校验全过;**Magnum 在 KVM 上(q35 测试记录)建成 1+1 集群 5 分 44 秒,七种 runtimeClassName 全过,控制面镜像零拉取(2026-09-09)**;真机待验 |
 | `rocky-10-baremetal-v1.37.0` | 上者 + k8s 层 | 本地构建,12 + 12 条校验全过(2026-09-09);Magnum/真机待验 |
-| `ubuntu-26.04-baremetal-v1.36.4` / `rocky-10-baremetal-v1.36.4` | 上者 + k8s 层 | 2026-09-11 加(平台集群是 1.36,Cilium 还不支持 1.37):12 + 12 条校验全过,已推 Glance;Magnum 端到端见下文更新 |
+| `ubuntu-26.04-baremetal-v1.36.4` / `rocky-10-baremetal-v1.36.4` | 上者 + k8s 层 | 2026-09-11 加(平台集群是 1.36,Cilium 还不支持 1.37):12 + 12 条校验全过,已推 Glance;**Ubuntu 那张经 Magnum(KVM,q35 测试记录)1+1 集群 6 分 53 秒建成,七种 runtimeClassName 全过,控制面镜像零拉取**;真机待验 |
 
 真机验收(Server07 / dl360-sfmk,Ironic `neutron` 接口 + redfish-virtual-media,root 371 GB Smart Array):
 Ironic `active`;交换机 Et29/Et30 **`in Po7` a-10G、Po7 `connected` 20G**;机内 bond0 802.3ad 两成员 10G,
