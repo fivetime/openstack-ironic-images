@@ -141,8 +141,19 @@ for m in json.load(sys.stdin).get("manifests", []):
         [[ -z "$lockm" || "$lockm" == "$mdigest" ]] || die "$ref: linux/amd64 manifest is $mdigest, the lock says $lockm"
         $c images pull --platform linux/amd64 "${ref%%:*}@${mdigest}" >/dev/null
         $c images tag --force "${ref%%:*}@${mdigest}" "$ref" >/dev/null
-        $c images export "$LC/images/$file.part" "$ref" >/dev/null
-        tar -tf "$LC/images/$file.part" >/dev/null || die "$ref: the exported archive is not a complete tar"
+        # ctr export has produced a truncated archive more than once here
+        # (a tar that ends mid-entry, sizes a few hundred KB short); nothing
+        # in its exit status says so. Check the tar and try again, up to
+        # three times, before giving up.
+        exported=
+        for attempt in 1 2 3; do
+            rm -f "$LC/images/$file.part"
+            $c images export "$LC/images/$file.part" "$ref" >/dev/null
+            if tar -tf "$LC/images/$file.part" >/dev/null 2>&1; then exported=1; break; fi
+            log "   attempt $attempt: exported archive for $ref is truncated ($(stat -c %s "$LC/images/$file.part") bytes); retrying"
+            sleep 2
+        done
+        [[ -n "$exported" ]] || die "$ref: the exported archive is not a complete tar after 3 attempts"
         mv "$LC/images/$file.part" "$LC/images/$file"
         echo "$digest" > "$marker"
         pulled=$((pulled + 1))
