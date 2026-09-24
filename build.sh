@@ -106,6 +106,11 @@ if isinstance(src, dict) and "iso" in src:
 else:
     sys.exit(f"{decl_path}: source.iso is required (an artifact in upstream/sources.yaml)")
 
+# Packages the installer needs that are not on the ISO (artifact ids),
+# delivered offline on the answer file's CD.
+if isinstance(src, dict) and isinstance(src.get("packages"), list):
+    out["SOURCE_PACKAGES"] = " ".join(str(p) for p in src["packages"])
+
 name = decl_path.split("/")[-2]
 if variant:
     name = f"{name}-{variant}"

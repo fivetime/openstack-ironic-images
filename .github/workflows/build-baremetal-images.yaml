@@ -93,7 +93,10 @@ jobs:
               # Rocky DVD alone is 9.6 GB, so caching it would evict
               # everything else on every run and still be a coin toss;
               # it downloads at 25 MB/s anyway. Cache the small ones only.
-              base = {"image": name, "iso": iso,
+              # Packages the installer needs that are not on the ISO
+              # (bsdinstall-iso: dhcpcd), fetched with it.
+              pkgs = " ".join((decl.get("source") or {}).get("packages") or [])
+              base = {"image": name, "iso": iso, "pkgs": pkgs,
                       "cache": size and size < 5_000_000_000}
               rows.append(dict(base, k8s="", name=name))
               for v in versions:
@@ -136,9 +139,12 @@ jobs:
           # run died on "missing required command: qemu-img" after
           # downloading a 9.6 GB ISO, because this list was written on a
           # workstation that already had it.
+          # zstd, sshpass and openssh-client are for bsdinstall-iso: its
+          # pkg files, and its boot test's logins (serial and SSH).
           sudo apt-get install -y --no-install-recommends \
             qemu-system-x86 qemu-utils ovmf xorriso socat jq openssl \
-            python3 python3-yaml dracut-core initramfs-tools-core curl
+            python3 python3-yaml dracut-core initramfs-tools-core curl \
+            zstd sshpass openssh-client
           test -e /dev/kvm || {
             echo "::error::/dev/kvm is missing: this runner cannot run an installer" >&2
             exit 1
@@ -149,7 +155,8 @@ jobs:
           qemu-system-x86_64 --version | head -1
           # Fail here, not after the ISO download: check every command the
           # pipeline needs before anything expensive happens.
-          for c in qemu-system-x86_64 qemu-img xorrisofs socat jq openssl python3 blkid losetup; do
+          for c in qemu-system-x86_64 qemu-img xorrisofs xorriso socat jq openssl python3 blkid losetup \
+                   zstd sshpass ssh-keygen; do
             command -v "$c" >/dev/null || { echo "::error::missing $c on this runner" >&2; exit 1; }
           done
           command -v lsinitrd >/dev/null || command -v unmkinitramfs >/dev/null || {
@@ -165,7 +172,7 @@ jobs:
           key: iso-${{ matrix.iso }}-${{ hashFiles('upstream/sources.yaml') }}
 
       - name: Fetch the installer ISO
-        run: bash ci/fetch-upstream.sh '${{ matrix.iso }}'
+        run: bash ci/fetch-upstream.sh '${{ matrix.iso }}' ${{ matrix.pkgs }}
 
       # The layer's artifacts, images and packages: 2.5 GB, keyed on the
       # lock files, so a lock that has not moved is a cache hit. Fetching

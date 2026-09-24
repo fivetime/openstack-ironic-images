@@ -34,3 +34,53 @@ artifacts:
       Checksum from the CHECKSUM file next to the ISO. The DVD, not the
       minimal ISO: the minimal one has no AppStream and cannot install
       offline.
+
+  freebsd-15.1-dvd1:
+    description: FreeBSD 15.1-RELEASE amd64 DVD installer (bsdinstall)
+    url: https://download.freebsd.org/releases/ISO-IMAGES/15.1/FreeBSD-15.1-RELEASE-amd64-dvd1.iso
+    filename: freebsd-15.1-dvd1.iso
+    sha256: "027504262c65e096d78bd345d74905a8a7216bbb3c6155d55634ae8328f76c5d"
+    size_bytes: 4605024256
+    licence: FreeBSD (BSD 2-clause) and the licences of the packages on the DVD
+    note: |
+      Checksum from CHECKSUM.SHA256-FreeBSD-15.1-RELEASE-amd64 next to the
+      ISO. The DVD, not disc1: it carries the pkgbase repository
+      (/usr/freebsd-packages/offline) that installs the base system with no
+      network, and a package repository (/packages) with sudo.
+
+  freebsd-14.5-dvd1:
+    description: FreeBSD 14.5-RELEASE amd64 DVD installer (bsdinstall)
+    url: https://download.freebsd.org/releases/ISO-IMAGES/14.5/FreeBSD-14.5-RELEASE-amd64-dvd1.iso
+    filename: freebsd-14.5-dvd1.iso
+    sha256: "bda03fd9fe0cb09f19043d47a2686deacd495bd43fd620c6033ada3279f731e7"
+    size_bytes: 4417687552
+    licence: FreeBSD (BSD 2-clause) and the licences of the packages on the DVD
+    note: |
+      Checksum from CHECKSUM.SHA256-FreeBSD-14.5-RELEASE-amd64. The base
+      system comes from the distribution sets (base.txz, kernel.txz); sudo
+      from the DVD's package repository.
+
+  freebsd-15.1-dhcpcd:
+    description: dhcpcd 10.3.1 for FreeBSD 15 (the 15.1-RELEASE package set)
+    url: https://pkg.freebsd.org/FreeBSD:15:amd64/release_1/All/Hashed/dhcpcd-10.3.1~2702e0f387.pkg
+    filename: freebsd-15.1-dhcpcd.pkg
+    sha256: "2702e0f3876c16e8385c036c57fc19124c0a87376e095e75dd431f91672424a4"
+    size_bytes: 185590
+    licence: BSD 2-clause
+    note: |
+      Not on the DVD. From release_1, the package set frozen with
+      15.1-RELEASE (its packagesite records this sha256). No dependencies.
+      The base system has no DHCPv6 client; see
+      pipelines/bsdinstall-iso/README.md.
+
+  freebsd-14.5-dhcpcd:
+    description: dhcpcd 10.3.2 for FreeBSD 14 (the 14.5-RELEASE package set)
+    url: https://pkg.freebsd.org/FreeBSD:14:amd64/release_5/All/Hashed/dhcpcd-10.3.2~7ae140ac3c.pkg
+    filename: freebsd-14.5-dhcpcd.pkg
+    sha256: "7ae140ac3cca41b9e0e056668275f329cb2884c5530fb84f169fcbfffc0b9d10"
+    size_bytes: 185846
+    licence: BSD 2-clause
+    note: |
+      From release_5, the package set frozen with 14.5-RELEASE. No
+      dependencies.
+

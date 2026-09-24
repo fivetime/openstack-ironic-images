@@ -1,0 +1,269 @@
+#!/usr/libexec/flua
+-- Render an OpenStack network_data.json into FreeBSD rc.conf.d files, for
+-- what nuageinit(7) cannot do on a bare-metal machine.
+--
+--   nuageinit-netdata sanitize <network_data.json>
+--       rewrite the file with "links" and "networks" emptied ("services",
+--       the DNS servers, stays for nuageinit)
+--   nuageinit-netdata render <network_data.json>
+--       write /etc/rc.conf.d/network, routing and dhcpcd from the file
+--
+-- Why: nuageinit's config2_network calls ethernet_mac_address:lower() on
+-- every link, and a VLAN link has vlan_mac_address instead - the Lua error
+-- ends nuageinit before the hostname, the users and the SSH keys. It also
+-- knows no bond or VLAN, only the network types ipv4, ipv4_dhcp and ipv6,
+-- and writes IPv6 addresses without a prefix length. Ironic's
+-- network_data for a Neutron port group is exactly phy + bond + vlan
+-- (/etc/rc.conf.d/nuageinit has the rest of the arrangement).
+--
+-- Mapping:
+--   phy   the interface with that MAC address; "up", its MTU
+--   bond  laggN: 802.3ad -> lacp, active-backup -> failover,
+--         balance-rr -> roundrobin, balance-xor -> loadbalance;
+--         xmit hash layer2 / layer2+3 / layer3+4 -> l2 / l2,l3 / l3,l4;
+--         lacp_rate fast -> lacp_fast_timeout; its members "up"
+--   vlan  vlans_<parent>="<id> ...", the interface <parent>.<id>
+--   ipv4 "inet A netmask M"; ipv4_dhcp "DHCP"; ipv6 "inet6 A prefixlen N"
+--   ipv6_slaac, ipv6_dhcpv6-stateless, ipv6_dhcpv6-stateful: dhcpcd -6 on
+--         that interface (the base system has no DHCPv6 client)
+--   routes: 0.0.0.0/0 -> defaultrouter, ::/0 -> ipv6_defaultrouter (the
+--         first of each), others static_routes / ipv6_static_routes
+
+local ucl = require("ucl")
+
+local mode, path = arg[1], arg[2]
+if not (mode == "sanitize" or mode == "render") or not path then
+	io.stderr:write("usage: nuageinit-netdata sanitize|render <network_data.json>\n")
+	os.exit(2)
+end
+
+local parser = ucl.parser()
+local ok, err = parser:parse_file(path)
+if not ok then
+	io.stderr:write("nuageinit-netdata: " .. tostring(err) .. "\n")
+	os.exit(1)
+end
+local nd = parser:get_object()
+
+if mode == "sanitize" then
+	nd.links = {}
+	nd.networks = {}
+	local f = assert(io.open(path, "w"))
+	f:write(ucl.to_format(nd, "json"))
+	f:close()
+	os.exit(0)
+end
+
+local function sh(cmd)
+	local p = io.popen(cmd)
+	local out = p:read("*a")
+	p:close()
+	return out
+end
+
+-- Interfaces by MAC address, as nuageinit finds them.
+local by_mac = {}
+for i in sh("ifconfig -l ether"):gmatch("%S+") do
+	local mac = sh("ifconfig " .. i .. " ether"):match("ether%s+(%x%x:%x%x:%x%x:%x%x:%x%x:%x%x)")
+	if mac then
+		by_mac[mac:lower()] = i
+	end
+end
+
+local function varname(ifname)
+	return (ifname:gsub("[^%w]", "_"))
+end
+
+local function prefixlen(mask)
+	if mask == nil then
+		return nil
+	end
+	local n = 0
+	if mask:find(":") then
+		for h in mask:gmatch("[^:]+") do
+			local v = tonumber(h, 16)
+			while v > 0 do
+				n = n + (v & 1)
+				v = v >> 1
+			end
+		end
+	else
+		for o in mask:gmatch("%d+") do
+			local v = tonumber(o)
+			while v > 0 do
+				n = n + (v & 1)
+				v = v >> 1
+			end
+		end
+	end
+	return n
+end
+
+local names = {}      -- link id -> interface name
+local base = {}       -- interface -> its link-level ifconfig words
+local order = {}      -- interfaces in the order they are configured
+local cloned = {}
+local vlans = {}      -- parent -> list of VLAN ids
+local function add_iface(ifname, words)
+	if not base[ifname] then
+		order[#order + 1] = ifname
+	end
+	base[ifname] = words
+end
+local function mtu_words(l)
+	if l.mtu then
+		return " mtu " .. l.mtu
+	end
+	return ""
+end
+
+local links = nd.links or {}
+for _, l in ipairs(links) do
+	if l.type ~= "bond" and l.type ~= "vlan" and l.ethernet_mac_address then
+		local ifname = by_mac[l.ethernet_mac_address:lower()]
+		if ifname then
+			names[l.id] = ifname
+			add_iface(ifname, "up" .. mtu_words(l))
+		else
+			print("nuageinit-netdata: no interface with MAC " .. l.ethernet_mac_address .. " (link " .. l.id .. ")")
+		end
+	end
+end
+local proto = { ["802.3ad"] = "lacp", ["active-backup"] = "failover",
+	["balance-rr"] = "roundrobin", ["balance-xor"] = "loadbalance" }
+local hash = { ["layer2"] = "l2", ["layer2+3"] = "l2,l3", ["layer3+4"] = "l3,l4" }
+local nlagg = 0
+for _, l in ipairs(links) do
+	if l.type == "bond" then
+		local lagg = "lagg" .. nlagg
+		nlagg = nlagg + 1
+		cloned[#cloned + 1] = lagg
+		names[l.id] = lagg
+		local words = "laggproto " .. (proto[l.bond_mode] or "failover")
+		for _, m in ipairs(l.bond_links or {}) do
+			if names[m] then
+				words = words .. " laggport " .. names[m]
+			end
+		end
+		if l.bond_mode == "802.3ad" or l.bond_mode == "balance-xor" then
+			if hash[l.bond_xmit_hash_policy] then
+				words = words .. " lagghash " .. hash[l.bond_xmit_hash_policy]
+			end
+		end
+		if l.bond_mode == "802.3ad" and l.bond_lacp_rate == "fast" then
+			words = words .. " lacp_fast_timeout"
+		end
+		add_iface(lagg, words .. " up" .. mtu_words(l))
+	end
+end
+for _, l in ipairs(links) do
+	if l.type == "vlan" then
+		local parent = names[l.vlan_link]
+		if parent then
+			local ifname = parent .. "." .. l.vlan_id
+			names[l.id] = ifname
+			vlans[parent] = vlans[parent] or {}
+			table.insert(vlans[parent], tostring(l.vlan_id))
+			add_iface(ifname, "up" .. mtu_words(l))
+		else
+			print("nuageinit-netdata: VLAN link " .. l.id .. " on unknown link " .. tostring(l.vlan_link))
+		end
+	end
+end
+
+local v4 = {}           -- interface -> "inet ..." or "DHCP"
+local v6 = {}           -- interface -> "inet6 ..."
+local dhcp6 = {}        -- interfaces for dhcpcd
+local routing = {}
+local static4, static6 = {}, {}
+local have_default4, have_default6 = false, false
+for _, net in ipairs(nd.networks or {}) do
+	local ifname = names[net.link]
+	if not ifname then
+		print("nuageinit-netdata: network " .. tostring(net.id) .. " on unknown link " .. tostring(net.link))
+		goto continue
+	end
+	if net.type == "ipv4" then
+		v4[ifname] = "inet " .. net.ip_address .. " netmask " .. net.netmask
+	elseif net.type == "ipv4_dhcp" then
+		v4[ifname] = "DHCP"
+	elseif net.type == "ipv6" then
+		local len = prefixlen(net.netmask) or 64
+		v6[ifname] = "inet6 " .. net.ip_address .. " prefixlen " .. len
+	elseif net.type == "ipv6_slaac" or net.type == "ipv6_dhcpv6-stateless"
+		or net.type == "ipv6_dhcpv6-stateful" then
+		v6[ifname] = v6[ifname] or "inet6 -ifdisabled"
+		dhcp6[#dhcp6 + 1] = ifname
+	else
+		print("nuageinit-netdata: network type " .. tostring(net.type) .. " not handled")
+	end
+	local routes = net.routes or {}
+	if net.gateway then
+		table.insert(routes, 1, { network = net.type:match("^ipv6") and "::" or "0.0.0.0",
+			netmask = net.type:match("^ipv6") and "::" or "0.0.0.0", gateway = net.gateway })
+	end
+	for _, r in ipairs(routes) do
+		local six = r.network:find(":") ~= nil
+		local default = (r.network == "0.0.0.0" or r.network == "::") and prefixlen(r.netmask) == 0
+		if default and not six and not have_default4 then
+			routing[#routing + 1] = 'defaultrouter="' .. r.gateway .. '"'
+			have_default4 = true
+		elseif default and six and not have_default6 then
+			routing[#routing + 1] = 'ipv6_defaultrouter="' .. r.gateway .. '"'
+			have_default6 = true
+		elseif not default and not six then
+			local n = "nd" .. (#static4 + 1)
+			static4[#static4 + 1] = n
+			routing[#routing + 1] = "route_" .. n .. '="-net ' .. r.network .. "/" .. prefixlen(r.netmask) .. " " .. r.gateway .. '"'
+		elseif not default and six then
+			local n = "nd" .. (#static6 + 1)
+			static6[#static6 + 1] = n
+			routing[#routing + 1] = "ipv6_route_" .. n .. '="-net ' .. r.network .. " -prefixlen " .. prefixlen(r.netmask) .. " " .. r.gateway .. '"'
+		end
+	end
+	::continue::
+end
+if #static4 > 0 then
+	routing[#routing + 1] = 'static_routes="' .. table.concat(static4, " ") .. '"'
+end
+if #static6 > 0 then
+	routing[#routing + 1] = 'ipv6_static_routes="' .. table.concat(static6, " ") .. '"'
+end
+
+local network = {}
+if #cloned > 0 then
+	network[#network + 1] = 'cloned_interfaces="' .. table.concat(cloned, " ") .. '"'
+end
+for parent, ids in pairs(vlans) do
+	network[#network + 1] = "vlans_" .. varname(parent) .. '="' .. table.concat(ids, " ") .. '"'
+end
+for _, ifname in ipairs(order) do
+	-- ifconfig(8) takes an address family only right after the interface
+	-- name: "inet A netmask M" first, the link words after it.
+	local words = base[ifname]
+	if v4[ifname] == "DHCP" then
+		words = "DHCP " .. words
+	elseif v4[ifname] then
+		words = v4[ifname] .. " " .. words
+	end
+	network[#network + 1] = "ifconfig_" .. varname(ifname) .. '="' .. words .. '"'
+	if v6[ifname] then
+		network[#network + 1] = "ifconfig_" .. varname(ifname) .. '_ipv6="' .. v6[ifname] .. '"'
+	end
+end
+
+local function write(name, lines)
+	local f = assert(io.open("/etc/rc.conf.d/" .. name, "w"))
+	for _, l in ipairs(lines) do
+		f:write(l .. "\n")
+		print("nuageinit-netdata: " .. name .. ": " .. l)
+	end
+	f:close()
+end
+write("network", network)
+write("routing", routing)
+if #dhcp6 > 0 then
+	write("dhcpcd", { 'dhcpcd_enable="YES"', 'dhcpcd_flags="-6 ' .. table.concat(dhcp6, " ") .. '"' })
+else
+	write("dhcpcd", { 'dhcpcd_enable="NO"' })
+end

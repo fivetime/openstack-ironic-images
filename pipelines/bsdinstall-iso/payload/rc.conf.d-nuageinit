@@ -1,0 +1,52 @@
+# /etc/rc.conf.d/nuageinit - sourced by /etc/rc.d/nuageinit, and by
+# nuageinit_post_net and nuageinit_user_data_script (load_rc_config
+# nuageinit), after each has set its own start_cmd.
+#
+# For /etc/rc.d/nuageinit only, the start command is replaced when a
+# config drive is present (Ironic always writes one, as a partition of the
+# root disk labelled config-2): the drive is copied, links and networks
+# are removed from the copy's network_data.json, nuageinit runs on the copy
+# - hostname, users, SSH keys, user-data, DNS as usual - and the network
+# is rendered from the untouched network_data.json by
+# /usr/local/libexec/nuageinit-netdata (bond -> lagg, VLAN, the DHCPv6
+# types), which nuageinit cannot do: a VLAN link makes it fail before it
+# gets to the users (see that script). Without a config drive nuageinit's
+# own start runs unchanged.
+#
+# This file is configuration, not a changed base system file: pkgbase and
+# freebsd-update leave /etc/rc.d/nuageinit theirs to replace.
+
+if [ "$name" = "nuageinit" ]; then
+	start_cmd="nuageinit_baremetal_start"
+fi
+
+nuageinit_baremetal_start()
+{
+	local drive fs dir nd
+	for fs in iso9660 msdosfs; do
+		drive="/dev/$fs/[cC][oO][nN][fF][iI][gG]-2"
+		if [ -e $drive ]; then
+			break
+		fi
+		unset drive
+	done
+	if [ -z "$drive" ]; then
+		nuageinit_start
+		return
+	fi
+	dir=$(mktemp -d /tmp/nuageinit-cd.XXXXXX)
+	mkdir -p $dir/mnt $dir/cd
+	mount -r -t $(fstyp $drive) $drive $dir/mnt
+	cp -Rp $dir/mnt/. $dir/cd/
+	umount $dir/mnt
+	nd=$dir/cd/openstack/latest/network_data.json
+	if [ -f $nd ]; then
+		cp $nd $dir/network_data.json
+		/usr/local/libexec/nuageinit-netdata sanitize $nd
+	fi
+	/usr/libexec/nuageinit $dir/cd/openstack/latest config-2 2>&1 | tee -a /var/log/nuageinit.log
+	if [ -f $dir/network_data.json ]; then
+		/usr/local/libexec/nuageinit-netdata render $dir/network_data.json 2>&1 | tee -a /var/log/nuageinit.log
+	fi
+	rm -rf $dir
+}

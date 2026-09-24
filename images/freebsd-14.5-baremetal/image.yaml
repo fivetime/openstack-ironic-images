@@ -1,0 +1,38 @@
+# FreeBSD 14.5-RELEASE for bare metal, installed from the official DVD with
+# bsdinstall's scripted install (installerconfig), offline.
+#
+# Same reasoning as the Linux declarations and the repository README: the
+# console a physical machine needs is set here and asserted before the
+# image is allowed out. FreeBSD has no initramfs - the GENERIC kernel and
+# its modules are the same on the official cloud image - so for FreeBSD the
+# installer is not about drivers but about the console contract, a layout
+# of our own, and a system that has seen no cloud-image defaults (root
+# without a password, password SSH, nuageinit's freebsd/freebsd).
+#
+# nuageinit cannot configure the network Ironic describes for a Neutron
+# port group (phy + bond + VLAN); the image carries its own renderer. See
+# pipelines/bsdinstall-iso/README.md.
+
+pipeline: bsdinstall-iso
+
+source:
+  iso: freebsd-14.5-dvd1
+  # Not on the DVD, delivered on the answer file's CD.
+  packages: [freebsd-14.5-dhcpcd]
+
+installer: bsdinstall
+disk_size: 8G
+output_format: raw
+admin_user: sysadmin
+
+# DL360 Gen10 / iLO: serial-over-LAN is COM2 (ttyS1 on Linux, ttyu1 on
+# FreeBSD, I/O port 0x2F8). Dell iDRAC and Supermicro use COM1 and would
+# need their own declaration.
+serial_console: ttyS1
+
+glance:
+  properties:
+    hw_firmware_type: uefi
+    os_distro: freebsd
+    os_version: "14.5"
+    # No hypervisor_type: this record is for Ironic.

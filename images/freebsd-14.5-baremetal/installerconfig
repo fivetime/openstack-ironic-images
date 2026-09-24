@@ -1,0 +1,32 @@
+# bsdinstall(8) SCRIPTING answer file for FreeBSD 14.5-RELEASE on bare metal.
+# pipelines/bsdinstall-iso puts it on the DVD as /etc/installerconfig (the
+# file the installer looks for) and the rest on a CD labelled FBSDOEM.
+#
+# The installer VM has no network: everything comes from the DVD and that
+# CD.
+
+# One GPT disk: the boot partitions the installer adds (EFI system
+# partition, freebsd-boot) and one UFS root last, no swap - growfs grows
+# the root into the machine's disk on first boot.
+PARTITIONS="vtbd0 GPT { auto freebsd-ufs / }"
+
+# Base system: the distribution sets on the DVD (/usr/freebsd-dist).
+DISTRIBUTIONS="kernel.txz base.txz"
+
+export nonInteractive="YES"
+
+# The installer's own output (partitioning, the base system, the
+# post-install script) on the build VM's serial port, which is the build
+# log (/dev/console reaches only the primary console, the screen).
+exec >>/dev/ttyu0 2>&1
+
+#!/bin/sh
+# Chrooted in the installed system. The CD is reached through its label,
+# so devfs has to be there.
+set -eux
+mount | grep -q ' on /dev ' || mount -t devfs devfs /dev
+mkdir -p /media/oem
+mount -r -t cd9660 /dev/iso9660/FBSDOEM /media/oem
+sh /media/oem/post-install.sh
+umount /media/oem
+rmdir /media/oem
