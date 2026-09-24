@@ -110,7 +110,9 @@ autoinstall:
       printf 'sr_mod\ncdrom\nisofs\n' >> /target/etc/initramfs-tools/modules
     - curtin in-target --target=/target -- update-initramfs -u -k all
     - curtin in-target --target=/target -- update-grub
-    - curtin in-target --target=/target -- systemctl enable serial-getty@@@SERIAL_CONSOLE@@.service
+    # A getty on both COM ports: the declared one is the kernel console,
+    # and a login still works if a BMC or BIOS setting uses the other.
+    - curtin in-target --target=/target -- systemctl enable serial-getty@ttyS0.service serial-getty@ttyS1.service serial-getty@@@SERIAL_CONSOLE@@.service
 
     # 3) Metadata. Ironic and Nova both hand this machine a config drive;
     #    nothing here should ever go looking for a metadata service on

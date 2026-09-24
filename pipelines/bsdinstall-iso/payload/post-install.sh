@@ -63,7 +63,13 @@ if grep -q "^$SERIAL_TTY[[:space:]]" /etc/ttys; then
 else
 	printf '%s\t"/usr/libexec/getty 3wire.115200"\tvt100\ton  secure\n' "$SERIAL_TTY" >>/etc/ttys
 fi
-grep "^$SERIAL_TTY" /etc/ttys
+# The other COM port gets a getty too (if it exists): a login still works
+# if a BMC or BIOS setting uses it.
+for other in ttyu0 ttyu1; do
+	[ "$other" = "$SERIAL_TTY" ] && continue
+	sed -i '' -E "s|^$other[[:space:]].*|$other	\"/usr/libexec/getty 3wire.115200\"	vt100	onifexists secure|" /etc/ttys
+done
+grep -E "^ttyu[01]" /etc/ttys
 
 # ---- services. nuageinit (the base system's cloud-init) reads the config
 # drive Ironic writes; growfs grows the root into the disk, without adding

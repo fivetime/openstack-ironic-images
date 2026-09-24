@@ -26,11 +26,16 @@ disk_size: 12G
 output_format: raw            # Ironic writes it unconverted
 admin_user: sysadmin
 
-# HPE iLO puts the serial-over-LAN console on ttyS1; Dell iDRAC and
-# Supermicro use ttyS0. This fleet is DL360 Gen10, so ttyS1. A different
-# vendor needs its own declaration, not a runtime flag - getting it wrong
-# is invisible until the day someone needs the console.
-serial_console: ttyS1
+# DL360 Gen10 / iLO here: the iLO virtual serial port (serial-over-LAN,
+# `ssh Administrator@<iLO>` -> `vsp`) is COM1 = ttyS0. BIOS
+# VirtualSerialPort = Com1Irq4 on Server07 and Server09, COM2 being the
+# rear DB9 port (EmbeddedSerialPort = Com2Irq3). Measured 2026-09-24 on
+# Server07 (kvm-worker5): a line written to /dev/ttyS0 appears on the VSP,
+# one written to /dev/ttyS1 does not - and with the console and getty on
+# ttyS1, as this declaration first had, the VSP showed nothing. Another
+# vendor or BIOS setting needs its own declaration; the answer file also
+# puts a getty on the other COM port, so a login works on either.
+serial_console: ttyS0
 
 glance:
   properties:

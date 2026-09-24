@@ -69,9 +69,9 @@ when it is unhappy cannot be told apart from one that did not run. A
 failure is a build failure: no image, no manifest, no upload.
 
     ok   local login: sysadmin has a password
-    ok   grub console: tty0 + ttyS1, serial terminal, no quiet/splash
+    ok   grub console: tty0 + ttyS0, serial terminal, no quiet/splash
     ok   grub menu waits
-    ok   serial-getty@ttyS1 enabled
+    ok   serial-getty@ttyS0 enabled
     ok   early-boot storage drivers (ahci smartpqi hpsa megaraid_sas mpt3sas nvme)
     ok   early-boot console drivers (hid_generic usbhid mgag200 ast)
     ok   early-boot config-drive drivers (sr_mod isofs)
@@ -153,11 +153,19 @@ passed, exit status 1.
 
 ## Serial port per vendor
 
-HPE iLO puts serial-over-LAN on `ttyS1`; Dell iDRAC and Supermicro use
-`ttyS0`. That is a property of the machine, so it is declared per image
-(`serial_console:` in `image.yaml`), not passed at run time. A fleet with
-both needs two images; getting it wrong is invisible until the day
-somebody needs the console.
+Which COM port the BMC's serial-over-LAN is depends on the machine and
+its BIOS, so it is declared per image (`serial_console:` in
+`image.yaml`), not passed at run time. On this fleet's DL360 Gen10 the iLO
+virtual serial port is **COM1 = ttyS0** (BIOS `VirtualSerialPort =
+Com1Irq4`; COM2 is the rear DB9 port). This README used to say ttyS1, and
+the images were built that way until 2026-09-24: on Server07, whose image
+had the console and getty on ttyS1, a line written to `/dev/ttyS0` appeared
+on the iLO VSP and one written to `/dev/ttyS1` did not - the console
+contract's check passed in QEMU while the real console was silent. Dell
+iDRAC is usually COM2, Supermicro COM2 or COM3; read the BIOS of the
+machine before writing its declaration. The answer files also put a getty
+on the other COM port, so a login works on either; only the kernel
+console and grub follow the declaration.
 
 ## Usage
 
@@ -176,8 +184,8 @@ Needs root (loop mounts) and `/dev/kvm`.
 ## Not done yet
 
 - A CI workflow, with the console password coming from a secret.
-- Machines whose BMC uses `ttyS0` (Dell iDRAC, Supermicro). That is one
-  more declaration, not a code change.
+- Machines whose BMC uses another COM port (Dell iDRAC, Supermicro). That
+  is one more declaration, not a code change.
 - A real acceptance run on a DL360: `tests/smoke-baremetal.md` is the
   list, and the switch port negotiating 10G is the judge, not the Ironic
   provision state.

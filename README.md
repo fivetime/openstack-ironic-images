@@ -147,6 +147,11 @@ Glance 里两条记录都**不带 `hypervisor_type`**(裸金属给 Ironic 用,�
 | `/usr/lib/firmware` | 727 MB | 完整 |
 | 串口 ttyS1 登录 | ✅ | ✅,**grub 菜单本身也画在串口上**(倒数 5 秒可按键进救援项) |
 
+⚠ 上表的串口登录是在 QEMU 里测的,**不是经 iLO**。2026-09-24 实测:这批 DL360 的 iLO 虚拟串口是 **COM1 = ttyS0**
+(BIOS `VirtualSerialPort=Com1Irq4`,COM2 是背板 DB9);在 Server07(kvm-worker5,按旧声明 console/getty 在 ttyS1)
+上往 `/dev/ttyS0` 写的行出现在 VSP,往 `/dev/ttyS1` 写的没有。声明已改为 `ttyS0`,并且两个 COM 口都起 getty;
+**已部署的旧镜像要重建/就地改**(kvm-worker4 是 platform 镜像,本来就是 ttyS0,不受影响)。
+
 真机验收另有一份清单:`tests/smoke-baremetal.md`。判据是交换机口协商到 10G,
 不是 Ironic 的 provision state——`active` 不证明这台机器有网。
 
@@ -166,4 +171,5 @@ ISO 缓存是**按镜像决定**的:GitHub 给一个仓库的缓存总量是 10 
 - 在新仓库配 `OS_*` 那组 secret,之后 CI 就能一步到位推 Glance(`push_to_glance=true`);
   现在是从控制节点手工推的(`pipelines/distro-iso/push-to-glance.sh dist [镜像名...]`)。
 - DL360 上的真机验收。
-- 别的机型:iDRAC/超微是 `ttyS0`,要各自一份声明(见 `pipelines/distro-iso/README.md`)。
+- 别的机型:串口号按机型/BIOS 读出来再写声明(iDRAC 常见 COM2、超微 COM2/COM3),见 `pipelines/distro-iso/README.md`。
+- 按 ttyS0 重建 Ubuntu/Rocky(含 k8s 层变体)并推 Glance——要真实控制台密码。

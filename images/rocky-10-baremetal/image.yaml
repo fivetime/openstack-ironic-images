@@ -23,9 +23,16 @@ disk_size: 12G
 output_format: raw
 admin_user: sysadmin
 
-# DL360 Gen10 / iLO: serial-over-LAN is ttyS1. Dell iDRAC and Supermicro
-# use ttyS0 and would need their own declaration.
-serial_console: ttyS1
+# DL360 Gen10 / iLO here: the iLO virtual serial port (serial-over-LAN,
+# `ssh Administrator@<iLO>` -> `vsp`) is COM1 = ttyS0. BIOS
+# VirtualSerialPort = Com1Irq4 on Server07 and Server09, COM2 being the
+# rear DB9 port (EmbeddedSerialPort = Com2Irq3). Measured 2026-09-24 on
+# Server07 (kvm-worker5): a line written to /dev/ttyS0 appears on the VSP,
+# one written to /dev/ttyS1 does not - and with the console and getty on
+# ttyS1, as this declaration first had, the VSP showed nothing. Another
+# vendor or BIOS setting needs its own declaration; the answer file also
+# puts a getty on the other COM port, so a login works on either.
+serial_console: ttyS0
 
 glance:
   properties:
