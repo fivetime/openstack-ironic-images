@@ -117,7 +117,7 @@ s3 后端的 location URI 长这样 `s3://<access-key>:<secret-key>@host/bucket/
 | `rocky-10-baremetal` | kickstart | CI 构建、十条校验全过、串口登录实测、已推 Glance、**DL360 Gen10 真机验收通过(2026-09-08,第二版镜像)** |
 | `ubuntu-26.04-baremetal-v1.37.0` | 上者 + k8s 层 | 本地构建,12 条基础 + 12 条层校验全过;**Magnum 在 KVM 上(q35 测试记录)建成 1+1 集群 5 分 44 秒,七种 runtimeClassName 全过,控制面镜像零拉取(2026-09-09)**;真机待验 |
 | `rocky-10-baremetal-v1.37.0` | 上者 + k8s 层 | 本地构建,12 + 12 条校验全过(2026-09-09);Magnum/真机待验 |
-| `freebsd-15.1-baremetal` / `freebsd-14.5-baremetal` | bsdinstall | 2026-09-24 加:官方 DVD 离线装(15.1 pkgbase、14.5 distsets),23 条 verify + 22 条启动验证全过(COM2 串口登录、驱动在内核、bond→lagg+VLAN 渲染、默认密码清掉);本地用临时密码验证,**正式构建(真实控制台密码)与推 Glance、真机验收待办**。nuageinit 不认 bond/VLAN 且遇 VLAN 就 Lua 报错,镜像自带渲染器,见 `pipelines/bsdinstall-iso/README.md` |
+| `freebsd-15.1-baremetal` / `freebsd-14.5-baremetal` | bsdinstall | 2026-09-24 加:官方 DVD 离线装(15.1 pkgbase、14.5 distsets),23 条 verify + 22 条启动验证全过(COM2 串口登录、驱动在内核、bond→lagg+VLAN 渲染、默认密码清掉);**Server09 真机验收两版都过(2026-09-24:iLO VSP 串口登录、smartpqi/bxe 10G、根 361G、Ironic 网络数据生效、出公网)**;正式构建(真实控制台密码)与推 Glance 待办。nuageinit 不认 bond/VLAN 且遇 VLAN 就 Lua 报错,镜像自带渲染器,见 `pipelines/bsdinstall-iso/README.md` |
 | `ubuntu-26.04-baremetal-v1.36.4` / `rocky-10-baremetal-v1.36.4` | 上者 + k8s 层 | 2026-09-11 加(平台集群是 1.36,Cilium 还不支持 1.37):12 + 12 条校验全过,已推 Glance;**Ubuntu 那张经 Magnum(KVM,q35 测试记录)1+1 集群 6 分 53 秒建成,七种 runtimeClassName 全过,控制面镜像零拉取**;真机待验 |
 
 真机验收(Server07 / dl360-sfmk,Ironic `neutron` 接口 + redfish-virtual-media,root 371 GB Smart Array):

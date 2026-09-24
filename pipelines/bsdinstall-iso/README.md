@@ -74,17 +74,23 @@ Three things about the installer VM that are not obvious:
 ## The console contract
 
 `verify.sh` (the disk, nothing running) and `boot-test.py` (the running
-system). For HPE iLO the declaration says `serial_console: ttyS1`, which
-is COM2, I/O port 0x2F8, `ttyu1` on FreeBSD.
+system). For HPE iLO the declaration says `serial_console: ttyS0`: the
+iLO virtual serial port is COM1 (I/O 0x3F8, `ttyu0` on FreeBSD). The BIOS
+of Server07 and Server09 says `VirtualSerialPort = Com1Irq4`, COM2 being
+the rear DB9 port (`EmbeddedSerialPort = Com2Irq3`). The first version
+declared ttyS1, copied from the Linux declarations: on Server09 the VSP
+showed nothing, and on Server07 - whose Linux image has its console and
+getty on ttyS1 - it shows nothing either.
 
 | what | how | checked by |
 | --- | --- | --- |
 | local login | `sysadmin` (wheel, sudo with its own password) with the console password from `BAREMETAL_ADMIN_PASSWORD`; root locked | verify (hash), boot test: login **on the serial console** and over SSH, sudo, a wrong password refused |
-| kernel console | `boot_serial` + `boot_multicons`, `hw.uart.console="io:0x2F8,br:115200"`: the BMC's port primary, the screen second | verify; boot test: boot messages on COM2, `kern.console` |
-| loader | `console="efi"`, `autoboot_delay=5`: the UEFI console, which the firmware shows on the screen and redirects to the BMC's port (HPE Gen10 by default). With `comconsole,efi` the loader writes that port a second time and every character of its menu arrives doubled - seen in the boot test | verify; boot test: the menu on COM2, once |
-| getty | `ttyu1 ... on` in `/etc/ttys` | verify; boot test: `login:` on COM2 |
+| kernel console | `boot_serial` + `boot_multicons`, `hw.uart.console="io:0x3F8,br:115200"`: the BMC's port primary, the screen second | verify; boot test: boot messages on COM1, `kern.console` |
+| loader | `console="efi"`, `autoboot_delay=5`: the UEFI console, which the firmware shows on the screen and redirects to the BMC's port (HPE Gen10 by default). With `comconsole,efi` the loader writes that port a second time and every character of its menu arrives doubled - seen in the boot test | verify; boot test: the menu on COM1, once |
+| getty | `ttyu0 ... on` in `/etc/ttys` | verify; boot test: `login:` on COM1 |
 | drivers | storage (ahci, smartpqi, ciss, mrsas, mfi, mpr, mps, nvme) and console (ukbd, hkbd, kbdmux, uart) compiled into GENERIC; NIC drivers and the ice DDP firmware module present | boot test: `kldstat -v -i 1`, with `mlx5en` (a module) as the control that the check can say no; verify: modules |
 | layout | GPT, ESP with `EFI/BOOT/BOOTX64.EFI`, one UFS root last, no swap; `growfs` grows it on first boot, `growfs_swap_size=0` | verify; boot test: root grew |
+| fstab | by GPT label (`/dev/gpt/rootfs`, `/dev/gpt/efiboot0`), set by post-install with `gpart modify -l`. bsdinstall writes the build VM's device names (`/dev/vtbd0p2`); the server's disk behind Smart Array is `da0`, and the first Server09 boot stopped at `mountroot>` ("Mounting from ufs:/dev/vtbd0p2 failed with error 19"). The QEMU boot test had the disk on virtio-blk too and could not see it; it now boots the disk on SCSI (`da0`) | verify: no device names; boot test: boots from da0 |
 | template | `/firstboot` present, no SSH host keys, no hostid, no guest agent | verify; boot test: made on first boot |
 
 `verify.sh` was run against a disk that does not keep the contract (the
@@ -137,9 +143,38 @@ on configuration: lagg0 with both ports and `LACP_FAST_TIMO`, the VLAN
 addresses, the default route, dhcpcd on lagg0.12. Traffic through the
 bond is for the real machine (`tests/smoke-baremetal.md`).
 
+## Acceptance on a DL360 (Server09, 2026-09-24)
+
+Ironic direct deploy (`network_interface=neutron`, VIF on the `baremetal`
+network, VLAN 17; config drive with meta_data only - the network data is
+Ironic's own from the port), both 15.1 and 14.5, with images built
+exactly as above with a throwaway console password:
+
+- switch: Et34 from 1G (auxiliary power, off) to **a-10G**; the machine's
+  MAC learned on Et34, VLAN 17; Po9's configuration identical before and
+  after (NGS writes the same VLAN 17);
+- iLO virtual serial port (`ssh Administrator@<iLO>` -> `vsp`): the whole
+  boot, `FreeBSD/amd64 (<hostname>) (ttyu0)`, and a **login as sysadmin
+  with the console password**; `kern.console` = `ttyu0,ttyv0`;
+- `smartpqi0/1: <E208i-p/-a SR Gen10>`, `bxe3: QLogic NetXtreme II
+  BCM57810 10GbE`, link up 10000 Mbps; root on da0 by label;
+- root grown to 361G up to the 64M config-drive partition Ironic adds
+  after it; hostname from the config drive; nuageinit without error;
+  Ironic's network data (`ipv4` on the phy link) rendered to
+  `ifconfig_bxe3="inet 10.224.0.40 netmask 255.255.255.0 up mtu 1500"`
+  and the default route; the gateway and 1.1.1.1 reachable; SSH with the
+  keypair (freebsd) and the console password (sysadmin, sudo);
+  `freebsd`'s built-in password removed.
+
+When the console shows nothing, the iLO remote console's thumbnail is
+readable over HTTPS with a Redfish session (`/images/thumbnail.bmp`, 16-bit
+BMP with bit fields that PIL does not read) - that is how the
+`mountroot>` screen was found.
+
+Not covered: Server09 has one leg (Et33 is not connected), so the bond /
+LACP path ran only in the QEMU boot test.
+
 ## Not done yet
 
-- A DL360 acceptance run (`tests/smoke-baremetal.md`): the bond coming up
-  against Port-Channel7, the serial console through iLO, the config drive
-  partition Ironic writes.
+- A bond/LACP run on real hardware (a server with both legs cabled).
 - Dell iDRAC / Supermicro (`ttyS0`): one more declaration.

@@ -47,6 +47,11 @@ else
     check "EFI system partition present" 1
 fi
 
+# ---- file systems by label: the build VM's disk is vtbd0, the server's is
+# whatever its controller makes it (da0 behind Smart Array).
+bad=$(awk '$1 ~ "^/dev/(vtbd|ada|da|nvd|nda|mmcsd)[0-9]" {print $1}' "$mnt/etc/fstab" | tr '\n' ' ')
+check "fstab by GPT label, no device names" "$([[ -z "$bad" ]] && grep -q '^/dev/gpt/rootfs[[:space:]]' "$mnt/etc/fstab"; echo $?)" "${bad:-/dev/gpt/*}"
+
 # ---- the local login
 hash=$(awk -F: -v u="$ADMIN_USER" '$1 == u {print $2}' "$mnt/etc/master.passwd")
 check "local login: $ADMIN_USER has a password (SHA-512)" "$([[ "$hash" == '$6$'* ]]; echo $?)"

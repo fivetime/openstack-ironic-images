@@ -25,10 +25,13 @@ disk_size: 8G
 output_format: raw
 admin_user: sysadmin
 
-# DL360 Gen10 / iLO: serial-over-LAN is COM2 (ttyS1 on Linux, ttyu1 on
-# FreeBSD, I/O port 0x2F8). Dell iDRAC and Supermicro use COM1 and would
-# need their own declaration.
-serial_console: ttyS1
+# DL360 Gen10 / iLO here: the iLO virtual serial port (serial-over-LAN,
+# `ssh Administrator@<iLO>` -> `vsp`) is COM1 - BIOS VirtualSerialPort =
+# Com1Irq4 on Server07 and Server09, COM2 being the rear DB9 port
+# (EmbeddedSerialPort = Com2Irq3). So ttyS0 (FreeBSD ttyu0, I/O 0x3F8).
+# Checked 2026-09-24: on Server07, whose Linux image has its console and
+# getty on ttyS1, the VSP shows nothing.
+serial_console: ttyS0
 
 glance:
   properties:

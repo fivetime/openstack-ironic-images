@@ -89,8 +89,10 @@ qemu = subprocess.Popen([
     "-display", "none", "-vga", "std", *serial_args,
     "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE}",
     "-drive", f"if=pflash,format=raw,file={work}/vars.fd",
-    "-drive", f"if=none,id=d0,format=qcow2,file={ovl}", "-device", "virtio-blk-pci,drive=d0",
+    # The disk on SCSI: da0, as behind the server's RAID controller, not
+    # the build VM's vtbd0 - a name baked into the image fails here too.
     "-device", "virtio-scsi-pci,id=scsi0",
+    "-drive", f"if=none,id=d0,format=qcow2,file={ovl}", "-device", "scsi-hd,drive=d0,bus=scsi0.0,bootindex=0",
     "-drive", f"if=none,id=cd0,format=raw,readonly=on,file={work}/config-2.iso",
     "-device", "scsi-cd,drive=cd0,bus=scsi0.0",
     "-netdev", "user,id=n1,restrict=on", "-device", f"virtio-net-pci,netdev=n1,mac={MAC1}",

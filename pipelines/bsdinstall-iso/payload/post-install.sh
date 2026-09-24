@@ -83,6 +83,40 @@ install -m 0555 $SEED/payload/nuageinit_default_password /usr/local/etc/rc.d/nua
 sed -i '' -E 's/^slaac[[:space:]]+private/slaac hwaddr/' /usr/local/etc/dhcpcd.conf
 grep -q '^slaac hwaddr' /usr/local/etc/dhcpcd.conf
 
+# ---- the file systems by GPT label, not by device name: bsdinstall writes
+# /etc/fstab with the build VM's names (/dev/vtbd0p2), and on the server
+# the disk behind the RAID controller is da0 - the first Server09 boot
+# stopped at mountroot> ("Mounting from ufs:/dev/vtbd0p2 failed with error
+# 19"). The official images use /dev/gpt/<label> the same way.
+fstab_by_label() {
+	local dev mnt rest label disk idx
+	: >/tmp/fstab.new
+	while read -r dev mnt rest; do
+		case "$dev" in
+		/dev/*p[0-9]*)
+			case "$mnt" in
+			/) label=rootfs ;;
+			/boot/efi) label=efiboot0 ;;
+			none) label=swapfs ;;
+			*) label=$(echo "$mnt" | tr -c 'a-z0-9\n' '_' | sed 's/^_//') ;;
+			esac
+			disk=${dev#/dev/}; idx=${disk##*p}; disk=${disk%p*}
+			gpart modify -i "$idx" -l "$label" "$disk"
+			printf '/dev/gpt/%s\t%s\t%s\n' "$label" "$mnt" "$rest" >>/tmp/fstab.new
+			;;
+		*)
+			printf '%s\t%s\t%s\n' "$dev" "$mnt" "$rest" >>/tmp/fstab.new
+			;;
+		esac
+	done </etc/fstab
+	mv /tmp/fstab.new /etc/fstab
+}
+fstab_by_label
+cat /etc/fstab
+if grep -qE '^/dev/(vtbd|ada|da|nvd|nda|mmcsd)[0-9]' /etc/fstab; then
+	echo "fstab still names devices" >&2; exit 1
+fi
+
 # ---- template identity: the first boot of every machine runs the
 # firstboot scripts (nuageinit, growfs, the default password); no SSH host
 # keys, no hostid.
