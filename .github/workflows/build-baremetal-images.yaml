@@ -142,7 +142,7 @@ jobs:
           # zstd, sshpass and openssh-client are for bsdinstall-iso: its
           # pkg files, and its boot test's logins (serial and SSH);
           # zfsutils-linux for its verify step, which imports a ZFS root's
-          # pool read-only (the -zfs images).
+          # pool read-only (the freebsd-zfs-* images).
           sudo apt-get install -y --no-install-recommends \
             qemu-system-x86 qemu-utils ovmf xorriso socat jq openssl \
             python3 python3-yaml dracut-core initramfs-tools-core curl \

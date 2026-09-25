@@ -1,5 +1,5 @@
-# FreeBSD 15.1-RELEASE for bare metal, ZFS root - the same image as
-# freebsd-15.1-baremetal (UFS) but for the file system; installed from the
+# FreeBSD 14.5-RELEASE for bare metal, ZFS root - the same image as
+# freebsd-ufs-14.5-baremetal (UFS) but for the file system; installed from the
 # official DVD with
 # bsdinstall's scripted install (installerconfig), offline.
 #
@@ -18,9 +18,9 @@
 pipeline: bsdinstall-iso
 
 source:
-  iso: freebsd-15.1-dvd1
+  iso: freebsd-14.5-dvd1
   # Not on the DVD, delivered on the answer file's CD.
-  packages: [freebsd-15.1-dhcpcd]
+  packages: [freebsd-14.5-dhcpcd]
 
 installer: bsdinstall
 # The root file system the answer file creates (zfsboot); verify.sh checks
@@ -42,5 +42,5 @@ glance:
   properties:
     hw_firmware_type: uefi
     os_distro: freebsd
-    os_version: "15.1"
+    os_version: "14.5"
     # No hypervisor_type: this record is for Ironic.

@@ -6,13 +6,13 @@ QEMU VM; the disk is then checked against the console contract and booted
 the way Ironic delivers it before it is shipped.
 
     ci/fetch-upstream.sh freebsd-15.1-dvd1 freebsd-15.1-dhcpcd
-    BAREMETAL_ADMIN_PASSWORD='...' ./build.sh freebsd-15.1-baremetal
+    BAREMETAL_ADMIN_PASSWORD='...' ./build.sh freebsd-ufs-15.1-baremetal
     ci/fetch-upstream.sh freebsd-14.5-dvd1 freebsd-14.5-dhcpcd
-    BAREMETAL_ADMIN_PASSWORD='...' ./build.sh freebsd-14.5-baremetal
+    BAREMETAL_ADMIN_PASSWORD='...' ./build.sh freebsd-ufs-14.5-baremetal
 
     # the same with a ZFS root (see "ZFS root" below)
-    BAREMETAL_ADMIN_PASSWORD='...' ./build.sh freebsd-15.1-baremetal-zfs
-    BAREMETAL_ADMIN_PASSWORD='...' ./build.sh freebsd-14.5-baremetal-zfs
+    BAREMETAL_ADMIN_PASSWORD='...' ./build.sh freebsd-zfs-15.1-baremetal
+    BAREMETAL_ADMIN_PASSWORD='...' ./build.sh freebsd-zfs-14.5-baremetal
 
 Only the latest minor release of each major (14.x, 15.x): a minor release
 is supported for about three months after the next one.
@@ -202,11 +202,13 @@ on configuration: lagg0 with both ports and `LACP_FAST_TIMO`, the VLAN
 addresses, the default route, dhcpcd's IPv6 on lagg0.12 only and IPv4 on the unnamed NIC. Traffic
 through the bond is for the real machine (`tests/smoke-baremetal.md`).
 
-## ZFS root (the -zfs images)
+## ZFS root (the freebsd-zfs-* images)
 
-`freebsd-{15.1,14.5}-baremetal-zfs` are the UFS images with a ZFS root and nothing else changed:
-the same answer file but for the partitioning, the same post-install, console contract, network
-renderer and DHCP. The declaration says `root_fs: zfs`; the build passes it on (seed `oem.env`,
+`freebsd-zfs-{15.1,14.5}-baremetal` are the UFS images (`freebsd-ufs-{15.1,14.5}-baremetal`) with a
+ZFS root and nothing else changed: the same answer file but for the partitioning, the same
+post-install, console contract, network renderer and DHCP. The names put the file system before
+the version since 2026-09-25; until then the UFS images were `freebsd-{15.1,14.5}-baremetal`,
+renamed in Glance too. The declaration says `root_fs: zfs`; the build passes it on (seed `oem.env`,
 verify, boot test, manifest `root_fs`), and verify.sh checks that the disk agrees.
 
 - **Install:** bsdinstall's zfsboot, driven by `ZFSBOOT_*` in the answer file's preamble
@@ -276,5 +278,5 @@ LACP path ran only in the QEMU boot test.
 ## Not done yet
 
 - A bond/LACP run on real hardware (a server with both legs cabled).
-- The -zfs images on real hardware (Smart Array in HBA/RAID mode, the pool on `da0`).
+- The freebsd-zfs-* images on real hardware (Smart Array in HBA/RAID mode, the pool on `da0`).
 - Dell iDRAC / Supermicro (`ttyS0`): one more declaration.
