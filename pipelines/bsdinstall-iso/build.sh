@@ -14,7 +14,7 @@
 #             it installs, oem.env (admin user, password hash, serial
 #             port), and the packages the base system lacks - pkg and sudo
 #             (+ dependencies) copied off the DVD's own repository, dhcpcd
-#             pinned from the release's frozen package set
+#             pinned in upstream/sources.yaml (10.5.2, from latest)
 #   remaster  the DVD with two files added: /etc/installerconfig (the file
 #             the installer runs unattended; images/<name>/installerconfig)
 #             and /boot/loader.conf.local (the installer's console on the
@@ -23,8 +23,8 @@
 #   install   QEMU/OVMF boots the DVD, no NIC: everything comes from the
 #             DVD and the CD. The installer reboots when it is done, which
 #             -no-reboot turns into QEMU exiting
-#   verify    mount the result read-only and check the console contract
-#             (verify.sh)
+#   verify    mount the result read-only (UFS) or import its pool read-only
+#             (ZFS) and check the console contract (verify.sh)
 #   boottest  boot it with a config drive carrying Ironic-shaped
 #             network_data (bond + VLANs), log in on the serial console and
 #             over SSH, check the network, the accounts, the growth
@@ -51,7 +51,8 @@ INSTALLER=${INSTALLER:-bsdinstall}
 DISK_SIZE=${DISK_SIZE:-8G}
 OUTPUT_FORMAT=${OUTPUT_FORMAT:-raw}
 ADMIN_USER=${ADMIN_USER:-sysadmin}
-SERIAL_CONSOLE=${SERIAL_CONSOLE:-ttyS1}
+SERIAL_CONSOLE=${SERIAL_CONSOLE:-ttyS0}
+ROOT_FS=${ROOT_FS:-ufs}
 CACHE_DIR=${CACHE_DIR:-$REPO_DIR/upstream/cache}
 OVMF_CODE=${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}
 OVMF_VARS=${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}
@@ -63,6 +64,14 @@ INSTALL_ONLY=${INSTALL_ONLY:-}
 VERIFY_ONLY=${VERIFY_ONLY:-}
 [[ "$INSTALLER" == bsdinstall ]] || die "pipeline bsdinstall-iso only runs bsdinstall (got $INSTALLER)"
 [[ "$ADMIN_USER" =~ ^[a-z][a-z0-9_-]*$ ]] || die "not a login name: $ADMIN_USER"
+# The root file system is the answer file's (PARTITIONS for UFS, ZFSBOOT_*
+# for ZFS); the declaration's root_fs says which, verify.sh checks that the
+# disk agrees, and the ZFS-only parts (post-install, verify, boot test)
+# follow it.
+case "$ROOT_FS" in
+    ufs|zfs) ;;
+    *) die "root_fs must be ufs or zfs (got $ROOT_FS)" ;;
+esac
 
 # The serial port the BMC's serial-over-LAN is, by its Linux name in the
 # declaration: ttyS0 is COM1, ttyS1 is COM2.
@@ -73,6 +82,8 @@ case "$SERIAL_CONSOLE" in
 esac
 
 require_cmd qemu-system-x86_64 qemu-img xorriso python3 sha256sum jq openssl tar zstd sfdisk
+# verify.sh imports a ZFS root read-only on the build host.
+[[ "$ROOT_FS" != zfs ]] || require_cmd zpool zfs
 require_root
 [[ -e /dev/kvm ]] || die "/dev/kvm is required"
 install_cleanup_traps
@@ -105,7 +116,7 @@ seed_cd() {
     install -m 0644 "$SCRIPT_DIR/payload/rc.conf.d-nuageinit" "$SCRIPT_DIR/payload/nuageinit-netdata" \
         "$SCRIPT_DIR/payload/nuageinit_default_password" "$SCRIPT_DIR/payload/dhcpcd-rc" \
         "$SCRIPT_DIR/payload/rc.conf.d-dhclient" "$SCRIPT_DIR/payload/rc.conf.d-dhcpcd" \
-        "$SCRIPT_DIR/payload/dhcpcd-hook-mtu" "$seed/payload/"
+        "$SCRIPT_DIR/payload/dhcpcd-hook-mtu" "$SCRIPT_DIR/payload/zpool_reguid" "$seed/payload/"
     # SHA-512 crypt, as FreeBSD's passwd_format=sha512 writes it; the
     # password itself goes nowhere else.
     hash=$(printf '%s' "$BAREMETAL_ADMIN_PASSWORD" | openssl passwd -6 -stdin)
@@ -114,6 +125,7 @@ seed_cd() {
         printf "ADMIN_HASH='%s'\n" "$hash"
         printf 'SERIAL_IO=%s\n' "$SERIAL_IO"
         printf 'SERIAL_TTY=%s\n' "$SERIAL_TTY"
+        printf 'ROOT_FS=%s\n' "$ROOT_FS"
     } >"$seed/oem.env"
     chmod 0600 "$seed/oem.env"
 
@@ -267,14 +279,14 @@ fi
 
 # ---------------------------------------------------------------- verify
 log "== verify: the console contract"
-SERIAL_IO=$SERIAL_IO SERIAL_TTY=$SERIAL_TTY ADMIN_USER=$ADMIN_USER \
+SERIAL_IO=$SERIAL_IO SERIAL_TTY=$SERIAL_TTY ADMIN_USER=$ADMIN_USER ROOT_FS=$ROOT_FS \
     bash "$SCRIPT_DIR/verify.sh" "$raw" | tee "$logs/verify.log"
 [[ ${PIPESTATUS[0]} -eq 0 ]] || die "verify failed; the image does not keep the console contract"
 
 # -------------------------------------------------------------- boottest
 log "== boottest: config drive with bond + VLANs, serial login, SSH"
 [[ -n "${BAREMETAL_ADMIN_PASSWORD:-}" ]] || die "BAREMETAL_ADMIN_PASSWORD is required for the boot test"
-OVMF_CODE="$OVMF_CODE" OVMF_VARS="$OVMF_VARS" ADMIN_USER="$ADMIN_USER" \
+OVMF_CODE="$OVMF_CODE" OVMF_VARS="$OVMF_VARS" ADMIN_USER="$ADMIN_USER" ROOT_FS="$ROOT_FS" \
     python3 "$SCRIPT_DIR/boot-test.py" "$raw" "$logs/boottest" "$SERIAL_CONSOLE" ||
     die "boot test failed"
 
@@ -291,8 +303,9 @@ manifest_write "$OUTPUT_DIR" "$IMAGE_NAME" "$(jq -n \
     --arg disk "$(basename "$out")" --arg fmt "$OUTPUT_FORMAT" --arg iso "$SOURCE_ISO" \
     --arg installer "$INSTALLER" --arg serial "$SERIAL_CONSOLE" --arg user "$ADMIN_USER" \
     --arg base "$BASE_IMAGE_NAME" --arg version "$version" --argjson pkgs "$pkgs_json" \
+    --arg rootfs "$ROOT_FS" \
     '{disk: $disk, disk_format: $fmt, target: "baremetal", source_iso: $iso,
-      installer: $installer, serial_console: $serial, admin_user: $user,
+      installer: $installer, serial_console: $serial, admin_user: $user, root_fs: $rootfs,
       base_image: $base, freebsd_version: $version, oem_pkgs: $pkgs,
       qemu_guest_agent: false, baremetal_firmware: true}')" >/dev/null
 log "== done: $out"

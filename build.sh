@@ -95,6 +95,8 @@ mapping = {
     "output_format": "OUTPUT_FORMAT",
     "admin_user": "ADMIN_USER",
     "serial_console": "SERIAL_CONSOLE",
+    # bsdinstall-iso: the root file system the answer file creates (ufs, zfs).
+    "root_fs": "ROOT_FS",
 }
 for key, env in mapping.items():
     if key in merged and not isinstance(merged[key], (dict, list)):

@@ -28,6 +28,7 @@ OVMF_CODE = os.environ.get("OVMF_CODE", "/usr/share/OVMF/OVMF_CODE_4M.fd")
 OVMF_VARS = os.environ.get("OVMF_VARS", "/usr/share/OVMF/OVMF_VARS_4M.fd")
 ADMIN = os.environ.get("ADMIN_USER", "sysadmin")
 PW = os.environ["BAREMETAL_ADMIN_PASSWORD"]
+ROOT_FS = os.environ.get("ROOT_FS", "ufs")
 
 disk, work, serial_console = sys.argv[1], sys.argv[2], sys.argv[3]
 com = {"ttyS0": 1, "ttyS1": 2}[serial_console]
@@ -257,6 +258,40 @@ try:
     check("first boot completed; hostid and SSH host keys made on this boot",
           "present" not in lines and len(lines) >= 2 and lines[-1].isdigit() and int(lines[-1]) > 0, out)
     check(f"a wrong password is refused for {ADMIN} (control)", ssh_admin("true", password=PW + "x")[0] != 0)
+
+    if ROOT_FS == "zfs":
+        # ---- a ZFS root: the boot environment, the pool grown with its
+        # partition (growfs: gpart resize, zpool online -e), a GUID of its
+        # own (zpool_reguid), and a second boot: the first one made a new
+        # hostid, and the root pool has to come up under it.
+        rc, out = as_root("mount -p | awk '$2 == \"/\" {print $1, $3}'; zpool list -Hp -o size zroot; "
+                          "zpool history zroot | grep -c 'zpool reguid'")
+        lines = out.split()
+        check("root is ZFS, the boot environment zroot/ROOT/default", lines[:2] == ["zroot/ROOT/default", "zfs"],
+              " ".join(lines[:2]))
+        psize = int(lines[2]) if len(lines) > 2 and lines[2].isdigit() else 0
+        check("the pool grew into the larger disk (growfs)", psize > os.path.getsize(disk),
+              f"pool {psize >> 20} MiB, image {os.path.getsize(disk) >> 20} MiB")
+        check("the root pool got a new GUID on first boot (zpool reguid in its history)",
+              len(lines) > 3 and lines[3] == "1", lines[3] if len(lines) > 3 else out)
+        rc, before = as_root("cat /etc/hostid; zpool get -Hp -o value guid zroot")
+        as_root("shutdown -r now >/dev/null 2>&1 &")
+        t0 = time.time()
+        while time.time() - t0 < 60 and ssh_key("true")[0] == 0:
+            time.sleep(2)
+        up = False
+        while time.time() - t0 < 600:
+            if ssh_key("true")[0] == 0:
+                up = True
+                break
+            time.sleep(5)
+        check("comes back after a reboot", up, f"{int(time.time() - t0)}s")
+        if up:
+            rc, after = as_root("cat /etc/hostid; zpool get -Hp -o value guid zroot; zpool status -x zroot; "
+                                "mount -p | awk '$2 == \"/\" {print $1}'")
+            check("second boot: same hostid and pool GUID, pool healthy, root from the boot environment",
+                  after.split()[:2] == before.split()[:2] and "is healthy" in after
+                  and after.split()[-1] == "zroot/ROOT/default", " | ".join(after.splitlines()))
     if fails:
         rc, out = as_root("tail -30 /var/log/nuageinit.log; cat /etc/rc.conf.d/network /etc/rc.conf.d/routing /etc/rc.conf.d/dhcpcd; "
                           "cat /var/run/dhcpcd.ipv4; tail -12 /var/run/dhcpcd.conf; tail -30 /var/log/daemon.log")

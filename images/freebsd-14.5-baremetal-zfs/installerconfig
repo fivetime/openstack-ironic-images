@@ -1,0 +1,41 @@
+# bsdinstall(8) SCRIPTING answer file (ZFS root) for FreeBSD 14.5-RELEASE on bare metal.
+# pipelines/bsdinstall-iso puts it on the DVD as /etc/installerconfig (the
+# file the installer looks for) and the rest on a CD labelled FBSDOEM.
+#
+# The installer VM has no network: everything comes from the DVD and that
+# CD.
+
+# One GPT disk, ZFS: bsdinstall's zfsboot lays it out - freebsd-boot
+# (gptboot0), the EFI system partition (efiboot0) and the pool's partition
+# (zfs0) last, no swap - and creates the pool zroot with the boot
+# environment zroot/ROOT/default and its usual datasets (compression on,
+# atime off, 4K sectors). growfs grows the partition and the pool into the
+# machine's disk on first boot, as it does a UFS root. The installer
+# exports the pool when it is done.
+export ZFSBOOT_DISKS="vtbd0"
+export ZFSBOOT_VDEV_TYPE="stripe"
+export ZFSBOOT_POOL_NAME="zroot"
+export ZFSBOOT_PARTITION_SCHEME="GPT"
+export ZFSBOOT_BOOT_TYPE="BIOS+UEFI"
+export ZFSBOOT_SWAP_SIZE="0"
+
+# Base system: the distribution sets on the DVD (/usr/freebsd-dist).
+DISTRIBUTIONS="kernel.txz base.txz"
+
+export nonInteractive="YES"
+
+# The installer's own output (partitioning, the base system, the
+# post-install script) on the build VM's serial port, which is the build
+# log (/dev/console reaches only the primary console, the screen).
+exec >>/dev/ttyu0 2>&1
+
+#!/bin/sh
+# Chrooted in the installed system. The CD is reached through its label,
+# so devfs has to be there.
+set -eux
+mount | grep -q ' on /dev ' || mount -t devfs devfs /dev
+mkdir -p /media/oem
+mount -r -t cd9660 /dev/iso9660/FBSDOEM /media/oem
+sh /media/oem/post-install.sh
+umount /media/oem
+rmdir /media/oem

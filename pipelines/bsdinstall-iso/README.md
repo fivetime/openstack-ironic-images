@@ -10,6 +10,10 @@ the way Ironic delivers it before it is shipped.
     ci/fetch-upstream.sh freebsd-14.5-dvd1 freebsd-14.5-dhcpcd
     BAREMETAL_ADMIN_PASSWORD='...' ./build.sh freebsd-14.5-baremetal
 
+    # the same with a ZFS root (see "ZFS root" below)
+    BAREMETAL_ADMIN_PASSWORD='...' ./build.sh freebsd-15.1-baremetal-zfs
+    BAREMETAL_ADMIN_PASSWORD='...' ./build.sh freebsd-14.5-baremetal-zfs
+
 Only the latest minor release of each major (14.x, 15.x): a minor release
 is supported for about three months after the next one.
 
@@ -55,6 +59,7 @@ yes`, and nuageinit's default user `freebsd` with the password `freebsd`
               runs chrooted. The installer reboots when done; -no-reboot
               makes that QEMU's exit
     verify    verify.sh: the disk mounted read-only on the build host
+              (a ZFS root: its pool imported read-only)
     boottest  boot-test.py: booted as Ironic delivers it
     manifest
 
@@ -197,6 +202,46 @@ on configuration: lagg0 with both ports and `LACP_FAST_TIMO`, the VLAN
 addresses, the default route, dhcpcd's IPv6 on lagg0.12 only and IPv4 on the unnamed NIC. Traffic
 through the bond is for the real machine (`tests/smoke-baremetal.md`).
 
+## ZFS root (the -zfs images)
+
+`freebsd-{15.1,14.5}-baremetal-zfs` are the UFS images with a ZFS root and nothing else changed:
+the same answer file but for the partitioning, the same post-install, console contract, network
+renderer and DHCP. The declaration says `root_fs: zfs`; the build passes it on (seed `oem.env`,
+verify, boot test, manifest `root_fs`), and verify.sh checks that the disk agrees.
+
+- **Install:** bsdinstall's zfsboot, driven by `ZFSBOOT_*` in the answer file's preamble
+  (`ZFSBOOT_DISKS=vtbd0` is what selects it instead of `PARTITIONS`): GPT with freebsd-boot
+  (`gptboot0`), the ESP (`efiboot0`) and the pool's partition (`zfs0`) last, `BIOS+UEFI`, no swap
+  (`ZFSBOOT_SWAP_SIZE=0`); pool `zroot`, boot environment `zroot/ROOT/default` and zfsboot's usual
+  datasets, compression on, atime off, 4K sectors. The installer exports the pool at the end.
+- **fstab:** zfsboot writes the ESP as `/dev/gpt/efiboot0` already, and the root is the pool's
+  `bootfs`, not an fstab line - so the device-name problem the UFS images had (`/dev/vtbd0p2`)
+  cannot arise; the post-install check still runs.
+- **Growth:** FreeBSD's `rc.d/growfs` handles a ZFS root in 14.5 and 15.1 alike: it takes the
+  pool's vdev (`gpt/zfs0`), finds its partition through `glabel status`, `gpart resize`s it and
+  runs `zpool online -e` - the pool grows up to Ironic's config-drive partition as a UFS root does.
+- **Pool GUID:** every machine starts with the build's pool, GUID included. Two disks of one
+  machine carrying the same pool GUID (the image deployed again onto another disk, the old one still
+  there) would leave the root pool's import to chance, so a firstboot rc.d script,
+  `/usr/local/etc/rc.d/zpool_reguid` (`zpool_reguid_enable=YES`), runs `zpool reguid` on the root
+  pool once. The pool name stays `zroot`.
+- **verify.sh** imports the pool on the build host read-only, **under another name**, with
+  `cachefile=none`, searching only the image's partition (`-d`), and **without `-f`** - a pool the
+  installer did not export does not import, and that fails the build. It mounts
+  `ROOT/default` (which holds /etc, /boot, /usr/local and /var/db) and exports the pool again. The
+  build host needs zfs (the module and zpool/zfs; CI installs `zfsutils-linux`). A build host with
+  pools of its own - this one has one - is not touched: nothing scans beyond the loop device.
+  ZFS checks on top of the UFS ones: ZFS last partition, clean read-only import, bootfs, compression,
+  no swap partition, no root line in fstab, `zfs_load`/`zfs_enable`, zpool_reguid enabled.
+- **boot test**, on top of the UFS checks: root mounted from `zroot/ROOT/default`, the pool grown
+  past the image size, `zpool reguid` in the pool's history, then **a reboot** - the first boot
+  made a new hostid - and back with the same hostid and pool GUID, the pool healthy and the root
+  from the boot environment.
+
+Test builds (2026-09-25, a throwaway console password): 15.1 and 14.5 pass all 61 checks; pool
+8 GiB -> 15.5 GiB in the boot test, back in 75 s after the reboot. Not accepted on real hardware yet
+(the UFS images were, on Server09).
+
 ## Acceptance on a DL360 (Server09, 2026-09-24)
 
 Ironic direct deploy (`network_interface=neutron`, VIF on the `baremetal`
@@ -231,4 +276,5 @@ LACP path ran only in the QEMU boot test.
 ## Not done yet
 
 - A bond/LACP run on real hardware (a server with both legs cabled).
+- The -zfs images on real hardware (Smart Array in HBA/RAID mode, the pool on `da0`).
 - Dell iDRAC / Supermicro (`ttyS0`): one more declaration.

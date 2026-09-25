@@ -140,11 +140,13 @@ jobs:
           # downloading a 9.6 GB ISO, because this list was written on a
           # workstation that already had it.
           # zstd, sshpass and openssh-client are for bsdinstall-iso: its
-          # pkg files, and its boot test's logins (serial and SSH).
+          # pkg files, and its boot test's logins (serial and SSH);
+          # zfsutils-linux for its verify step, which imports a ZFS root's
+          # pool read-only (the -zfs images).
           sudo apt-get install -y --no-install-recommends \
             qemu-system-x86 qemu-utils ovmf xorriso socat jq openssl \
             python3 python3-yaml dracut-core initramfs-tools-core curl \
-            zstd sshpass openssh-client
+            zstd sshpass openssh-client zfsutils-linux
           test -e /dev/kvm || {
             echo "::error::/dev/kvm is missing: this runner cannot run an installer" >&2
             exit 1

@@ -1,0 +1,45 @@
+#!/bin/sh
+#
+# PROVIDE: zpool_reguid
+# REQUIRE: growfs
+# BEFORE: NETWORKING
+# KEYWORD: firstboot
+#
+# A new GUID for the root pool, once, on a machine's first boot (installed
+# by bsdinstall-iso's post-install for a ZFS root).
+#
+# Every machine deployed from the image starts with the pool the build
+# created, GUID and all. Two disks carrying a pool of the same GUID - the
+# image deployed again onto another disk of the same machine, the old disk
+# still there - leave the import of the root pool to chance. zpool reguid
+# on the running pool gives this machine its own.
+
+. /etc/rc.subr
+
+name="zpool_reguid"
+desc="Give the root pool its own GUID on first boot"
+rcvar="zpool_reguid_enable"
+start_cmd="zpool_reguid_start"
+stop_cmd=":"
+
+zpool_reguid_start()
+{
+	local fsdev pool old new
+	fsdev=$(mount -p | awk '$2 == "/" && $3 == "zfs" { print $1 }')
+	if [ -z "$fsdev" ]; then
+		echo "zpool_reguid: the root is not ZFS"
+		return 0
+	fi
+	pool=${fsdev%%/*}
+	old=$(zpool get -Hp -o value guid "$pool")
+	if zpool reguid "$pool"; then
+		new=$(zpool get -Hp -o value guid "$pool")
+		echo "zpool_reguid: $pool $old -> $new"
+		logger -t zpool_reguid "$pool GUID $old -> $new (first boot)"
+	else
+		echo "zpool_reguid: zpool reguid $pool failed" >&2
+	fi
+}
+
+load_rc_config $name
+run_rc_command "$1"

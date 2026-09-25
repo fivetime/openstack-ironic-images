@@ -138,6 +138,19 @@ if grep -qE '^/dev/(vtbd|ada|da|nvd|nda|mmcsd)[0-9]' /etc/fstab; then
 	echo "fstab still names devices" >&2; exit 1
 fi
 
+# ---- a ZFS root (ROOT_FS=zfs, bsdinstall's zfsboot: pool zroot, boot
+# environment zroot/ROOT/default, GPT labels gptboot0/efiboot0/zfs0, no
+# swap). growfs grows it as it does UFS (gpart resize, zpool online -e).
+# Every machine starts with the build's pool GUID: zpool_reguid gives the
+# root pool a new one on first boot, so that two disks of one machine
+# never carry the same pool.
+if [ "${ROOT_FS:-ufs}" = zfs ]; then
+	install -m 0555 $SEED/payload/zpool_reguid /usr/local/etc/rc.d/zpool_reguid
+	sysrc zpool_reguid_enable=YES
+	zpool get -H -o property,value guid,bootfs,ashift zroot | sed 's/^/zpool: /'
+	zfs get -H -o property,value compression,atime zroot | sed 's/^/zfs: /'
+fi
+
 # ---- template identity: the first boot of every machine runs the
 # firstboot scripts (nuageinit, growfs, the default password); no SSH host
 # keys, no hostid.
