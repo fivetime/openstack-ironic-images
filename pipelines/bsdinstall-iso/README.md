@@ -38,8 +38,10 @@ yes`, and nuageinit's default user `freebsd` with the password `freebsd`
               the files it installs, oem.env (admin user, SHA-512 hash of
               the console password, serial port), and packages the base
               system lacks - pkg and sudo (+ gettext-runtime, indexinfo)
-              copied off the DVD's own repository, dhcpcd pinned from the
-              release's frozen package set (upstream/sources.yaml)
+              copied off the DVD's own repository, dhcpcd 10.5.2 pinned
+              from the latest package set (upstream/sources.yaml; the
+              release sets' 10.3.x crashes, see "DHCP" below), and the
+              DHCP glue (dhcpcd-rc, rc.conf.d/dhclient, rc.conf.d/dhcpcd)
     remaster  the DVD with /etc/installerconfig (images/<name>/
               installerconfig - the file the installer runs unattended)
               and /boot/loader.conf.local added. FreeBSD's ISO keeps its
@@ -125,23 +127,75 @@ original:
 | phy | the interface with that MAC; `up mtu N` |
 | bond `802.3ad` / `active-backup` / `balance-rr` / `balance-xor` | `laggN`, `laggproto lacp` / `failover` / `roundrobin` / `loadbalance`; hash `layer2` / `layer2+3` / `layer3+4` -> `l2` / `l2,l3` / `l3,l4`; `lacp_rate fast` -> `lacp_fast_timeout` |
 | vlan | `vlans_<parent>`, interface `<parent>.<id>` |
-| `ipv4` / `ipv4_dhcp` / `ipv6` | `inet A netmask M` / `DHCP` / `inet6 A prefixlen N` (the address first: ifconfig takes an address family only right after the interface) |
-| `ipv6_slaac` / `ipv6_dhcpv6-stateless` / `ipv6_dhcpv6-stateful` | dhcpcd -6 on that interface (`slaac hwaddr`: Neutron's port security passes only EUI-64 addresses) |
+| `ipv4` / `ipv6` | `inet A netmask M` / `inet6 A prefixlen N` (the address first: ifconfig takes an address family only right after the interface) |
+| `ipv4_dhcp` | `DHCP`: rc starts rc.d/dhclient for it, which dhcpcd serves (see "DHCP" below) |
+| `ipv6_slaac` / `ipv6_dhcpv6-stateless` / `ipv6_dhcpv6-stateful` | the interface in `dhcpcd_ipv6_interfaces` (`/etc/rc.conf.d/dhcpcd`, always written, empty too): dhcpcd runs IPv6 there and on no other interface (`slaac hwaddr`: Neutron's port security passes only EUI-64 addresses) |
 | routes | first `0.0.0.0/0` -> `defaultrouter`, first `::/0` -> `ipv6_defaultrouter`, others static routes |
 
-Interfaces the network data does not name get `ifconfig_DEFAULT="DHCP"`.
+Interfaces the network data does not name get `ifconfig_DEFAULT="DHCP"` (IPv4 by dhcpcd, as for
+`ipv4_dhcp`).
 nuageinit's built-in password is replaced with `*` by the first-boot
 script `nuageinit_default_password` before sshd starts (as on the cloud
 images). SSH: FreeBSD's default sshd, so `sysadmin` can log in with the
 console password, as on the Linux bare-metal images.
+
+## DHCP: dhcpcd is the only client
+
+Before, two clients: the base system's dhclient (DHCPv4 only) for the interfaces rc configures by DHCP,
+and dhcpcd `-6` for the DHCPv6/SLAAC interfaces. Now one dhcpcd manager serves both, through three
+files that are byte-identical in `openstack-cloud-images` (pipelines/freebsd-cloud/payload):
+
+- rc asks for DHCP on an interface configured `DHCP` (`ifconfig_<if>`, `ifconfig_DEFAULT`) by starting
+  `/etc/rc.d/dhclient <if>`: netif with `synchronous_dhclient=YES`, devd (`service dhclient quietstart`)
+  on link-up. `/usr/local/etc/rc.conf.d/dhclient` - sourced by that script through `load_rc_config`
+  after it has defined itself - replaces its start, stop and status with
+  `/usr/local/libexec/dhcpcd-rc ipv4-start|ipv4-stop|ipv4-status <if>`. Its start_precmd still runs and
+  still refuses an interface that is not DHCP. No base system file is changed (pkgbase replaces those).
+- `/usr/local/etc/rc.conf.d/dhcpcd`: `dhcpcd_enable=YES`, `dhcpcd_flags="-b -f /var/run/dhcpcd.conf"`,
+  `dhcpcd_ipv6_interfaces` (default `ALL`; the renderer's list in `/etc/rc.conf.d/dhcpcd` is read
+  first and wins), and the manager's configuration written before it starts.
+- `dhcpcd-rc`: the configuration is `/usr/local/etc/dhcpcd.conf`, then a global `noipv4` (and, unless
+  ALL, `noipv6` plus `interface <if>` / `ipv6` for each listed interface), then `interface <if>` /
+  `ipv4` for each interface rc asked DHCP for (kept in `/var/run/dhcpcd.ipv4`, emptied at boot).
+  `ipv4-start` records the interface, rewrites the configuration and runs `dhcpcd -n <if>` (reload
+  and rebind; the interface's IPv6 restarts too) - nothing when it is recorded already and the manager
+  runs, since netif and devd both ask. `ipv4-stop` removes it and runs `dhcpcd -4 -k <if>` (the IPv4
+  lease only). `lockf` serializes them.
+
+So each interface gets exactly what it got before: IPv4 where rc would have run dhclient, IPv6 where
+the network data asks for DHCPv6/SLAAC. `-b` sends the manager to the background at once; rc's
+`defaultroute` still waits up to 30 s for the default route when an interface is DHCP, as with
+dhclient. `synchronous_dhclient=YES` because a NIC that reports no link change (a virtio NIC under QEMU)
+leaves nobody to ask again after `service netif restart` - dhclient had the same gap - and asking no
+longer blocks the boot.
+
+**dhcpcd 10.5.2 or later.** 10.3.x (the 14.5 and 15.1 release sets) dies of SIGSEGV when an IPv4
+address it manages is deleted from outside - `service netif restart` does - with dhcpcd's default
+configuration too, so it is dhcpcd, not this arrangement. 10.5.2 survives and leases the address again
+(tested 2026-09-25 on 15.1). It is pinned from `latest` by sha256; a Hashed file there is removed when
+latest moves on, so a 404 means updating the entry. `verify.sh` and post-install check the version.
+
+**MTU.** A DHCP-given MTU (option 26) is put by dhcpcd on the routes it adds only - its choice on
+the BSDs - while dhclient set it on the interface. On Nova (the same dhcpcd, openstack-cloud-images,
+2026-09-25) the old image's interface had `mtu 1442` from Neutron and the first dhcpcd-only build
+`mtu 1500`: the routes were right, but what takes its MTU from the interface (a VLAN or bridge on it, a
+jail's epair, the connected route of an address added by hand) would lose everything over 1442. The hook
+`/usr/local/libexec/dhcpcd-hooks/10-mtu` (payload/dhcpcd-hook-mtu) sets `new_interface_mtu` on the
+interface as dhclient-script did. On bare metal the network data's link MTU is rendered anyway (`up
+mtu N`); the hook matters for an interface configured by DHCP.
+
+The boot test checks the bare-metal side of this (the renderer's list, IPv6 on VLAN 12 only, IPv4 on the
+unnamed NIC by dhcpcd with no dhclient running, the version). Deleting the address and
+`service netif restart` are checked by openstack-cloud-images' boot test, which reaches the guest
+through the guest agent; here root goes over SSH on the very NIC those would take down.
 
 The boot test gives the machine this network data - two phy links, a bond
 (802.3ad, layer3+4, lacp fast), VLAN 11 with static IPv4/IPv6 and the
 default route, VLAN 12 DHCPv6-stateful - plus a third NIC it does not name
 for the test's own SSH. There is no LACP partner in QEMU, so the checks are
 on configuration: lagg0 with both ports and `LACP_FAST_TIMO`, the VLAN
-addresses, the default route, dhcpcd on lagg0.12. Traffic through the
-bond is for the real machine (`tests/smoke-baremetal.md`).
+addresses, the default route, dhcpcd's IPv6 on lagg0.12 only and IPv4 on the unnamed NIC. Traffic
+through the bond is for the real machine (`tests/smoke-baremetal.md`).
 
 ## Acceptance on a DL360 (Server09, 2026-09-24)
 

@@ -83,7 +83,7 @@ check "storage, keyboard and NIC drivers present" "$([[ -z "${missing:-}" ]]; ec
 check "NIC firmware module (ice DDP)" "$(t test -f "$k/ice_ddp.ko")"
 
 # ---- first boot: nuageinit (with the bare-metal network renderer),
-# growfs, the default-password fix, dhcpcd for DHCPv6
+# growfs, the default-password fix, dhcpcd for DHCP (v4 and v6)
 rc="$mnt/etc/rc.conf"
 # rc.conf values with or without quotes.
 rcset() { grep -qE "^$1=\"?$2\"?\$" "$rc"; }
@@ -94,6 +94,15 @@ check "nuageinit bare-metal start (rc.conf.d/nuageinit + nuageinit-netdata)" \
 check "nuageinit_default_password installed" "$(t test -x "$mnt/usr/local/etc/rc.d/nuageinit_default_password")"
 check "dhcpcd with EUI-64 SLAAC" \
     "$(test -x "$mnt/usr/local/sbin/dhcpcd" && grep -q '^slaac hwaddr' "$mnt/usr/local/etc/dhcpcd.conf"; echo $?)"
+# The package's licence directory carries its version; 10.3.x dies when an
+# IPv4 address it manages is deleted from outside.
+dhcpcd_v=$(ls -d "$mnt"/usr/local/share/licenses/dhcpcd-* 2>/dev/null | sed 's|.*/dhcpcd-||' | head -1)
+check "dhcpcd 10.5.2 or later" \
+    "$([[ -n "$dhcpcd_v" && "$(printf '%s\n' 10.5.2 "$dhcpcd_v" | sort -V | head -1)" == 10.5.2 ]]; echo $?)" "${dhcpcd_v:-none}"
+check "dhcpcd is the only DHCP client (rc.d/dhclient redirected, dhcpcd-rc, synchronous_dhclient, MTU hook)" \
+    "$(test -x "$mnt/usr/local/libexec/dhcpcd-rc" && grep -q 'dhcpcd-rc ipv4-start' "$mnt/usr/local/etc/rc.conf.d/dhclient" \
+       && grep -q '^dhcpcd_enable="YES"' "$mnt/usr/local/etc/rc.conf.d/dhcpcd" && rcset synchronous_dhclient YES \
+       && grep -q 'ifconfig "$interface" mtu' "$mnt/usr/local/libexec/dhcpcd-hooks/10-mtu"; echo $?)"
 check "sshd enabled" "$(rcset sshd_enable YES; echo $?)"
 
 # ---- template identity

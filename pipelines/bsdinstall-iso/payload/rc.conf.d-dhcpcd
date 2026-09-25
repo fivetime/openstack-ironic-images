@@ -1,0 +1,21 @@
+# /usr/local/etc/rc.conf.d/dhcpcd - the dhcpcd manager, this system's
+# only DHCP client (/usr/local/libexec/dhcpcd-rc).
+dhcpcd_enable="YES"
+# -b: to the background at once. rc's defaultroute still waits for the
+# default route when an interface is configured by DHCP, as it did for
+# dhclient.
+dhcpcd_flags="-b -f /var/run/dhcpcd.conf"
+# The interfaces dhcpcd runs IPv6 on: ALL, or a list. Bare metal's network
+# data renderer writes the list to /etc/rc.conf.d/dhcpcd, which
+# load_rc_config reads before this file.
+dhcpcd_ipv6_interfaces="${dhcpcd_ipv6_interfaces-ALL}"
+# The package's rc.d/dhcpcd sources this file after defining itself: the
+# manager's configuration is written before it starts.
+if [ "$name" = dhcpcd ] && [ -z "$ifn" ]; then
+	start_precmd="dhcpcd_rc_precmd"
+fi
+dhcpcd_rc_precmd()
+{
+	dhcpcd_precmd
+	/usr/local/libexec/dhcpcd-rc conf
+}

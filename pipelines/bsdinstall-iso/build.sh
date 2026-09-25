@@ -103,7 +103,9 @@ seed_cd() {
     mkdir -p "$seed/payload" "$seed/pkgs" "$iso_mnt"
     install -m 0755 "$SCRIPT_DIR/payload/post-install.sh" "$seed/post-install.sh"
     install -m 0644 "$SCRIPT_DIR/payload/rc.conf.d-nuageinit" "$SCRIPT_DIR/payload/nuageinit-netdata" \
-        "$SCRIPT_DIR/payload/nuageinit_default_password" "$seed/payload/"
+        "$SCRIPT_DIR/payload/nuageinit_default_password" "$SCRIPT_DIR/payload/dhcpcd-rc" \
+        "$SCRIPT_DIR/payload/rc.conf.d-dhclient" "$SCRIPT_DIR/payload/rc.conf.d-dhcpcd" \
+        "$SCRIPT_DIR/payload/dhcpcd-hook-mtu" "$seed/payload/"
     # SHA-512 crypt, as FreeBSD's passwd_format=sha512 writes it; the
     # password itself goes nowhere else.
     hash=$(printf '%s' "$BAREMETAL_ADMIN_PASSWORD" | openssl passwd -6 -stdin)

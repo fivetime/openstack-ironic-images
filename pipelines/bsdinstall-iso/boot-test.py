@@ -22,7 +22,7 @@ What it stands in for:
 There is no LACP partner, so lagg0 has no active port: the checks are on
 configuration, not traffic.
 """
-import json, os, re, secrets, shutil, socket, subprocess, sys, tempfile, time
+import json, os, re, secrets, shlex, shutil, socket, subprocess, sys, tempfile, time
 
 OVMF_CODE = os.environ.get("OVMF_CODE", "/usr/share/OVMF/OVMF_CODE_4M.fd")
 OVMF_VARS = os.environ.get("OVMF_VARS", "/usr/share/OVMF/OVMF_VARS_4M.fd")
@@ -117,7 +117,9 @@ def ssh_admin(cmd, password=PW, timeout=120):
     return p.returncode, p.stdout.strip()
 
 def as_root(cmd):
-    return ssh_admin(f"echo '{PW}' | sudo -S -p '' sh -c {json.dumps(cmd)}")
+    # shlex, not json: a JSON string is double-quoted for the remote login
+    # shell, which expanded the command's own $variables before sudo ran it.
+    return ssh_admin(f"echo '{PW}' | sudo -S -p '' sh -c {shlex.quote(cmd)}")
 
 def console_log():
     try:
@@ -218,9 +220,22 @@ try:
     check("VLAN 11 with the static IPv4 and IPv6 (prefix length from the netmask)",
           "inet 10.32.0.27 netmask 0xfffff000" in out and "inet6 fc00:1:1::27 prefixlen 64" in out
           and "vlan: 11" in out, " | ".join(l.strip() for l in out.splitlines() if "inet" in l or "vlan:" in l))
-    rc, out = as_root("ifconfig lagg0.12; pgrep -lf dhcpcd")
-    check("VLAN 12 (DHCPv6-stateful) served by dhcpcd", "vlan: 12" in out and "lagg0.12" in out.split("dhcpcd", 1)[-1],
-          " | ".join(l.strip() for l in out.splitlines() if "dhcpcd" in l))
+    # dhcpcd is the only DHCP client: IPv6 on the interfaces the renderer
+    # lists (the DHCPv6 network's VLAN only), IPv4 on the interfaces rc
+    # configures by DHCP (here the unnamed NIC, ifconfig_DEFAULT).
+    rc, out = as_root("ifconfig lagg0.12 | grep 'vlan: 12'; cat /etc/rc.conf.d/dhcpcd; "
+                      "sed -n '/^# dhcpcd-rc/,$p' /var/run/dhcpcd.conf")
+    check("VLAN 12 (DHCPv6-stateful): dhcpcd runs IPv6 there and nowhere else",
+          "vlan: 12" in out and 'dhcpcd_ipv6_interfaces="lagg0.12"' in out
+          and "noipv4\nnoipv6\ninterface lagg0.12\nipv6" in out,
+          " | ".join(l.strip() for l in out.splitlines() if l.strip()))
+    rc, out = as_root("service dhclient status vtnet2; pgrep -x dhclient >/dev/null && echo DHCLIENT-RUNNING; "
+                      "ifconfig vtnet2 inet; v=$(pkg query %v dhcpcd); echo dhcpcd $v $(pkg version -t $v 10.5.2)")
+    check("dhcpcd, not dhclient, holds IPv4 on the unnamed NIC (rc.d/dhclient redirected)",
+          "DHCPv4 on vtnet2: dhcpcd is running" in out and "DHCLIENT-RUNNING" not in out and "inet " in out,
+          " | ".join(l.strip() for l in out.splitlines() if "DHCP" in l or "inet " in l))
+    check("dhcpcd is 10.5.2 or later", re.search(r"^dhcpcd \S+ [=>]$", out, re.M) is not None,
+          next((l for l in out.splitlines() if l.startswith("dhcpcd ")), out))
     rc, out = as_root("route -n get default | sed -n 's/.*gateway: //p'")
     check("IPv4 default route from the network data", out.strip() == "10.32.0.1", out)
     rc, out = as_root("cat /etc/rc.conf.d/network; grep -c ifconfig_vtnet2 /etc/rc.conf.d/network || true")
@@ -243,7 +258,8 @@ try:
           "present" not in lines and len(lines) >= 2 and lines[-1].isdigit() and int(lines[-1]) > 0, out)
     check(f"a wrong password is refused for {ADMIN} (control)", ssh_admin("true", password=PW + "x")[0] != 0)
     if fails:
-        rc, out = as_root("tail -30 /var/log/nuageinit.log; cat /etc/rc.conf.d/network /etc/rc.conf.d/routing /etc/rc.conf.d/dhcpcd")
+        rc, out = as_root("tail -30 /var/log/nuageinit.log; cat /etc/rc.conf.d/network /etc/rc.conf.d/routing /etc/rc.conf.d/dhcpcd; "
+                          "cat /var/run/dhcpcd.ipv4; tail -12 /var/run/dhcpcd.conf; tail -30 /var/log/daemon.log")
         print("\n".join("    " + l for l in out.splitlines()))
 finally:
     hold = int(os.environ.get("BOOTTEST_HOLD", "0"))

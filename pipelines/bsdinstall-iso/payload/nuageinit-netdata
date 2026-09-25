@@ -6,7 +6,8 @@
 --       rewrite the file with "links" and "networks" emptied ("services",
 --       the DNS servers, stays for nuageinit)
 --   nuageinit-netdata render <network_data.json>
---       write /etc/rc.conf.d/network, routing and dhcpcd from the file
+--       write /etc/rc.conf.d/network, routing and dhcpcd (the interfaces
+--       dhcpcd runs IPv6 on) from the file
 --
 -- Why: nuageinit's config2_network calls ethernet_mac_address:lower() on
 -- every link, and a VLAN link has vlan_mac_address instead - the Lua error
@@ -23,9 +24,13 @@
 --         xmit hash layer2 / layer2+3 / layer3+4 -> l2 / l2,l3 / l3,l4;
 --         lacp_rate fast -> lacp_fast_timeout; its members "up"
 --   vlan  vlans_<parent>="<id> ...", the interface <parent>.<id>
---   ipv4 "inet A netmask M"; ipv4_dhcp "DHCP"; ipv6 "inet6 A prefixlen N"
---   ipv6_slaac, ipv6_dhcpv6-stateless, ipv6_dhcpv6-stateful: dhcpcd -6 on
---         that interface (the base system has no DHCPv6 client)
+--   ipv4 "inet A netmask M"; ipv6 "inet6 A prefixlen N"
+--   ipv4_dhcp "DHCP": rc starts rc.d/dhclient for it, which dhcpcd serves
+--         (/usr/local/libexec/dhcpcd-rc)
+--   ipv6_slaac, ipv6_dhcpv6-stateless, ipv6_dhcpv6-stateful: the
+--         interface in dhcpcd_ipv6_interfaces (/etc/rc.conf.d/dhcpcd) -
+--         dhcpcd runs IPv6 on those only (the base system has no DHCPv6
+--         client)
 --   routes: 0.0.0.0/0 -> defaultrouter, ::/0 -> ipv6_defaultrouter (the
 --         first of each), others static_routes / ipv6_static_routes
 
@@ -262,8 +267,6 @@ local function write(name, lines)
 end
 write("network", network)
 write("routing", routing)
-if #dhcp6 > 0 then
-	write("dhcpcd", { 'dhcpcd_enable="YES"', 'dhcpcd_flags="-6 ' .. table.concat(dhcp6, " ") .. '"' })
-else
-	write("dhcpcd", { 'dhcpcd_enable="NO"' })
-end
+-- Always written, empty too: unset means every interface (the images'
+-- default when there is no network data at all).
+write("dhcpcd", { 'dhcpcd_ipv6_interfaces="' .. table.concat(dhcp6, " ") .. '"' })

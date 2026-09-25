@@ -1,0 +1,14 @@
+# /usr/local/etc/rc.conf.d/dhclient - dhcpcd, not dhclient, is this
+# system's DHCP client (/usr/local/libexec/dhcpcd-rc).
+#
+# rc asks for DHCP on an interface by starting /etc/rc.d/dhclient for it
+# (devd on link-up, netif with synchronous_dhclient). That script sources
+# this file through load_rc_config after defining itself, so the commands
+# set here replace its start, stop and status: the dhcpcd manager takes
+# IPv4 on that interface as well. Its start_precmd still runs and still
+# refuses an interface rc does not configure by DHCP.
+if [ "$name" = dhclient ] && [ -n "$ifn" ]; then
+	start_cmd="/usr/local/libexec/dhcpcd-rc ipv4-start $ifn"
+	stop_cmd="/usr/local/libexec/dhcpcd-rc ipv4-stop $ifn"
+	status_cmd="/usr/local/libexec/dhcpcd-rc ipv4-status $ifn"
+fi

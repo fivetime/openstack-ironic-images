@@ -17,9 +17,11 @@ SEED=/media/oem
 . $SEED/oem.env
 
 # ---- packages the system needs that are not in the base system, from the
-# CD: pkg and sudo (+ gettext-runtime) as the DVD carries them, dhcpcd from
-# the release's frozen package set (pinned in upstream/sources.yaml). The
-# files are named <name>-<version>.pkg so pkg add finds dependencies.
+# CD: pkg and sudo (+ gettext-runtime) as the DVD carries them, dhcpcd
+# pinned in upstream/sources.yaml (10.5.2 from "latest": 10.3.x, the
+# release sets' version, dies when an IPv4 address it manages is deleted
+# from outside). The files are named <name>-<version>.pkg so pkg add
+# finds dependencies.
 if ! pkg -N >/dev/null 2>&1; then
 	mkdir -p /tmp/pkg-bootstrap
 	tar -xf $SEED/pkgs/pkg-[0-9]*.pkg -C /tmp/pkg-bootstrap /usr/local/sbin/pkg-static
@@ -28,6 +30,7 @@ if ! pkg -N >/dev/null 2>&1; then
 fi
 env ASSUME_ALWAYS_YES=yes pkg add $SEED/pkgs/sudo-[0-9]*.pkg $SEED/pkgs/dhcpcd-[0-9]*.pkg
 pkg query '%n %v' sudo dhcpcd | sed 's/^/oem-version: /'
+[ "$(pkg version -t "$(pkg query %v dhcpcd)" 10.5.2)" != "<" ]
 
 # ---- the local login: the account for the person at the machine when
 # nothing else works. root stays locked; the admin has sudo through wheel.
@@ -73,10 +76,12 @@ grep -E "^ttyu[01]" /etc/ttys
 
 # ---- services. nuageinit (the base system's cloud-init) reads the config
 # drive Ironic writes; growfs grows the root into the disk, without adding
-# a swap partition; interfaces the network data does not name ask DHCP in
-# the background.
+# a swap partition; interfaces the network data does not name ask DHCP.
+# synchronous_dhclient: netif asks for DHCP itself rather than waiting for
+# a link-up from devd, which "service netif restart" does not produce on
+# every NIC; with dhcpcd behind rc.d/dhclient, asking no longer blocks.
 sysrc hostname="freebsd" sshd_enable=YES nuageinit_enable=YES growfs_enable=YES \
-    growfs_swap_size=0 ifconfig_DEFAULT="DHCP" dumpdev=AUTO
+    growfs_swap_size=0 ifconfig_DEFAULT="DHCP" synchronous_dhclient=YES dumpdev=AUTO
 
 # ---- nuageinit on bare metal: the network (bond, VLAN, DHCPv6) and its
 # built-in default password (see each file).
@@ -84,8 +89,18 @@ install -m 0444 $SEED/payload/rc.conf.d-nuageinit /etc/rc.conf.d/nuageinit
 install -d /usr/local/libexec
 install -m 0555 $SEED/payload/nuageinit-netdata /usr/local/libexec/nuageinit-netdata
 install -m 0555 $SEED/payload/nuageinit_default_password /usr/local/etc/rc.d/nuageinit_default_password
-# dhcpcd: SLAAC addresses from the MAC (EUI-64) - Neutron's port security
-# lets only those out; the interfaces it serves come from the network data.
+# ---- dhcpcd, the only DHCP client (see dhcpcd-rc): IPv4 on the
+# interfaces rc configures by DHCP (rc.d/dhclient redirected to it), IPv6
+# on the interfaces the network data renderer lists in /etc/rc.conf.d/
+# dhcpcd. SLAAC addresses from the MAC (EUI-64) - Neutron's port security
+# lets only those out.
+install -m 0555 $SEED/payload/dhcpcd-rc /usr/local/libexec/dhcpcd-rc
+install -d /usr/local/etc/rc.conf.d
+install -m 0444 $SEED/payload/rc.conf.d-dhclient /usr/local/etc/rc.conf.d/dhclient
+install -m 0444 $SEED/payload/rc.conf.d-dhcpcd /usr/local/etc/rc.conf.d/dhcpcd
+# A DHCP-given MTU on the interface too, as dhclient-script set it (dhcpcd
+# puts it on its routes only).
+install -m 0444 $SEED/payload/dhcpcd-hook-mtu /usr/local/libexec/dhcpcd-hooks/10-mtu
 sed -i '' -E 's/^slaac[[:space:]]+private/slaac hwaddr/' /usr/local/etc/dhcpcd.conf
 grep -q '^slaac hwaddr' /usr/local/etc/dhcpcd.conf
 

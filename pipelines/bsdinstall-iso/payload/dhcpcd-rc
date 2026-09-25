@@ -1,0 +1,125 @@
+#!/bin/sh
+#
+# dhcpcd as this system's only DHCP client: one dhcpcd manager serves
+# every interface - IPv6 (router advertisements, SLAAC, DHCPv6) on the
+# interfaces dhcpcd_ipv6_interfaces names (ALL: every one), IPv4 on the
+# interfaces rc asks DHCP for.
+#
+#   dhcpcd-rc conf               write the manager's configuration
+#   dhcpcd-rc ipv4-start <if>    /etc/rc.d/dhclient's start, stop and
+#   dhcpcd-rc ipv4-stop <if>     status for <if>, redirected here by
+#   dhcpcd-rc ipv4-status <if>   /usr/local/etc/rc.conf.d/dhclient
+#
+# rc asks for DHCP on an interface configured "DHCP" (ifconfig_<if>,
+# ifconfig_DEFAULT) by starting /etc/rc.d/dhclient for it: netif does
+# with synchronous_dhclient, devd does on link-up. The images set
+# synchronous_dhclient=YES: a virtio NIC under QEMU reports no link
+# changes, so after "service netif restart" nothing asked again (with
+# dhclient as much as here), and asking no longer blocks the boot - this
+# only tells the running manager. The base system's dhclient speaks
+# DHCPv4 only, and running it next to dhcpcd for IPv6 meant two clients
+# for one interface.
+#
+# dhcpcd must be 10.5.2 or later: 10.3.x (the 14.5 and 15.1 release
+# package sets, and quarterly in 2026Q3) dies of SIGSEGV when an IPv4
+# address it manages is deleted from outside, "service netif restart"
+# for one - with the default configuration too.
+#
+# The manager reads /var/run/dhcpcd.conf: /usr/local/etc/dhcpcd.conf,
+# then IPv4 off and IPv6 off except on dhcpcd_ipv6_interfaces, then IPv4
+# on for each interface rc asked for. dhcpcd.conf must not end inside an
+# "interface" block, or these global lines would land in it. /var/run is
+# emptied at boot: the interfaces rc asked for are this boot's.
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin
+dhcpcd=/usr/local/sbin/dhcpcd
+conf=/var/run/dhcpcd.conf
+ipv4=/var/run/dhcpcd.ipv4
+
+# One at a time: devd starts one of these per interface on link-up.
+if [ -z "$DHCPCD_RC_LOCKED" ]; then
+	DHCPCD_RC_LOCKED=1 exec lockf -k /var/run/dhcpcd-rc.lock "$0" "$@"
+fi
+
+. /etc/rc.subr
+load_rc_config dhcpcd
+
+write_conf()
+{
+	local i
+	{
+		cat /usr/local/etc/dhcpcd.conf
+		echo
+		echo "# dhcpcd-rc: IPv6 on ${dhcpcd_ipv6_interfaces:-no interface}, IPv4 where rc asks for DHCP"
+		echo noipv4
+		if [ "$dhcpcd_ipv6_interfaces" != ALL ]; then
+			echo noipv6
+			for i in $dhcpcd_ipv6_interfaces; do
+				printf 'interface %s\nipv6\n' "$i"
+			done
+		fi
+		if [ -f $ipv4 ]; then
+			while read -r i; do
+				printf 'interface %s\nipv4\n' "$i"
+			done <$ipv4
+		fi
+	} >$conf.new && mv -f $conf.new $conf
+}
+
+manager_pid()
+{
+	local pidfile
+	pidfile=$($dhcpcd -P 2>/dev/null) || return 1
+	pgrep -F "$pidfile" 2>/dev/null
+}
+
+ifn=$2
+case $1 in
+conf)
+	write_conf
+	;;
+ipv4-start)
+	[ -n "$ifn" ] || exit 64
+	# Asked twice (netif with synchronous_dhclient, then devd on
+	# link-up): once is enough. dhcpcd follows the link by itself.
+	if grep -qxF "$ifn" $ipv4 2>/dev/null && manager_pid >/dev/null; then
+		exit 0
+	fi
+	grep -qxF "$ifn" $ipv4 2>/dev/null || echo "$ifn" >>$ipv4
+	write_conf
+	if manager_pid >/dev/null; then
+		# Reload the configuration and rebind the interface: IPv4 on.
+		# The rebind restarts the interface's IPv6 as well.
+		$dhcpcd -n "$ifn"
+	else
+		# rc has not started the manager (yet): start it here, with
+		# the configuration just written.
+		$dhcpcd $dhcpcd_flags
+	fi
+	;;
+ipv4-stop)
+	[ -n "$ifn" ] || exit 64
+	if [ -f $ipv4 ]; then
+		grep -vxF "$ifn" $ipv4 >$ipv4.new
+		mv -f $ipv4.new $ipv4
+	fi
+	write_conf
+	# Release the IPv4 lease only; IPv6 on the interface stays.
+	if manager_pid >/dev/null; then
+		$dhcpcd -4 -k "$ifn"
+	fi
+	;;
+ipv4-status)
+	[ -n "$ifn" ] || exit 64
+	if grep -qxF "$ifn" $ipv4 2>/dev/null && pid=$(manager_pid); then
+		echo "DHCPv4 on $ifn: dhcpcd is running as pid $pid."
+	else
+		echo "DHCPv4 on $ifn: dhcpcd is not serving it."
+		exit 1
+	fi
+	;;
+*)
+	echo "usage: $0 conf | ipv4-start|ipv4-stop|ipv4-status <interface>" >&2
+	exit 64
+	;;
+esac

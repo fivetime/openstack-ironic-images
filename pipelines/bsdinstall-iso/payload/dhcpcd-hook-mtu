@@ -1,0 +1,21 @@
+# /usr/local/libexec/dhcpcd-hooks/10-mtu - sourced by dhcpcd-run-hooks.
+#
+# A DHCP-given MTU (option 26; Neutron sends the network's, 1442 on a
+# Geneve tenant network) is put by dhcpcd on the routes it adds, not on the
+# interface - its choice on the BSDs. dhclient, which dhcpcd replaced as
+# the IPv4 client (see /usr/local/libexec/dhcpcd-rc), set it on the
+# interface, and what takes its MTU from the interface - a VLAN or a bridge
+# on it, a jail's epair, the connected route of an address added by hand -
+# would get 1500 and lose every packet over 1442. Set it there too, as
+# dhclient-script did.
+case "$reason" in
+BOUND|RENEW|REBIND|REBOOT|INFORM)
+	if [ -n "$new_interface_mtu" ] && [ "$new_interface_mtu" -ge 576 ]; then
+		cur=$(ifconfig "$interface" | sed -n '1s/.* mtu \([0-9]*\).*/\1/p')
+		if [ "$cur" != "$new_interface_mtu" ]; then
+			syslog info "MTU $cur -> $new_interface_mtu (DHCP)"
+			ifconfig "$interface" mtu "$new_interface_mtu"
+		fi
+	fi
+	;;
+esac

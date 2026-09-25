@@ -61,26 +61,30 @@ artifacts:
       from the DVD's package repository.
 
   freebsd-15.1-dhcpcd:
-    description: dhcpcd 10.3.1 for FreeBSD 15 (the 15.1-RELEASE package set)
-    url: https://pkg.freebsd.org/FreeBSD:15:amd64/release_1/All/Hashed/dhcpcd-10.3.1~2702e0f387.pkg
+    description: dhcpcd 10.5.2 for FreeBSD 15 (the latest package set)
+    url: https://pkg.freebsd.org/FreeBSD:15:amd64/latest/All/Hashed/dhcpcd-10.5.2~2%24chcfcic6.pkg
     filename: freebsd-15.1-dhcpcd.pkg
-    sha256: "2702e0f3876c16e8385c036c57fc19124c0a87376e095e75dd431f91672424a4"
-    size_bytes: 185590
+    sha256: "a36690fc27aa5da12306b2701766bf626dfe840c86920bec50e1584e30825bb8"
+    size_bytes: 189604
     licence: BSD 2-clause
     note: |
-      Not on the DVD. From release_1, the package set frozen with
-      15.1-RELEASE (its packagesite records this sha256). No dependencies.
-      The base system has no DHCPv6 client; see
-      pipelines/bsdinstall-iso/README.md.
+      Not on the DVD; the images' only DHCP client (pipelines/bsdinstall-iso/
+      payload/dhcpcd-rc). From "latest", not the 15.1 release set (10.3.1):
+      10.3.x dies of SIGSEGV when an IPv4 address it manages is deleted
+      from outside ("service netif restart"); 10.5.2 does not (tested
+      2026-09-25). A Hashed file is removed when latest moves on: a 404
+      means updating this entry (packagesite.yaml's repopath for dhcpcd).
+      No dependencies. The same file as openstack-cloud-images' entry of
+      this name.
 
   freebsd-14.5-dhcpcd:
-    description: dhcpcd 10.3.2 for FreeBSD 14 (the 14.5-RELEASE package set)
-    url: https://pkg.freebsd.org/FreeBSD:14:amd64/release_5/All/Hashed/dhcpcd-10.3.2~7ae140ac3c.pkg
+    description: dhcpcd 10.5.2 for FreeBSD 14 (the latest package set)
+    url: https://pkg.freebsd.org/FreeBSD:14:amd64/latest/All/Hashed/dhcpcd-10.5.2~2%24qbptjtx3.pkg
     filename: freebsd-14.5-dhcpcd.pkg
-    sha256: "7ae140ac3cca41b9e0e056668275f329cb2884c5530fb84f169fcbfffc0b9d10"
-    size_bytes: 185846
+    sha256: "86290b114ef6c1303a95a2435b4750916d123ec3adb817203f27e6279e0e1689"
+    size_bytes: 189907
     licence: BSD 2-clause
     note: |
-      From release_5, the package set frozen with 14.5-RELEASE. No
-      dependencies.
+      As freebsd-15.1-dhcpcd, for FreeBSD 14 (the 14.5 release set has
+      10.3.2).
 
