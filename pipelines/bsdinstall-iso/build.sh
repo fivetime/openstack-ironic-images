@@ -120,11 +120,16 @@ seed_cd() {
     on_cleanup "mountpoint -q '$iso_mnt' && umount '$iso_mnt' || true"
     abi=$(cd "$iso_mnt/packages" && ls -d FreeBSD:*:amd64 | head -1)
     [[ -n "$abi" ]] || die "no package repository on the DVD"
-    python3 - "$iso_mnt/packages/$abi" "$seed/pkgs" pkg sudo <<'PY' || die "resolving packages on the DVD failed"
-import io, json, os, shutil, sys, tarfile
-repo, dest, *wanted = sys.argv[1:]
-with tarfile.open(os.path.join(repo, "packagesite.pkg")) as t:
-    site = t.extractfile("packagesite.yaml").read().decode()
+    # packagesite.pkg is a zstd tar. GNU tar (with zstd installed) reads
+    # it; Python's tarfile only learned zstd in 3.14, and the CI runner's
+    # 3.12 failed here while every local build passed.
+    tar -xOf "$iso_mnt/packages/$abi/packagesite.pkg" packagesite.yaml >"$work_dir/packagesite.yaml" \
+        || die "cannot read packagesite.yaml off the DVD"
+    python3 - "$iso_mnt/packages/$abi" "$seed/pkgs" "$work_dir/packagesite.yaml" pkg sudo <<'PY' || die "resolving packages on the DVD failed"
+import json, os, shutil, sys
+repo, dest, sitefile, *wanted = sys.argv[1:]
+with open(sitefile) as fh:
+    site = fh.read()
 pkgs = {}
 for line in site.splitlines():
     d = json.loads(line)
