@@ -141,6 +141,15 @@ for m in json.load(sys.stdin).get("manifests", []):
         [[ -z "$lockm" || "$lockm" == "$mdigest" ]] || die "$ref: linux/amd64 manifest is $mdigest, the lock says $lockm"
         $c images pull --platform linux/amd64 "${ref%%:*}@${mdigest}" >/dev/null
         $c images tag --force "${ref%%:*}@${mdigest}" "$ref" >/dev/null
+        # A pull unpacks, and the unpacker does not download a layer whose
+        # snapshot already exists: an image pulled earlier into this
+        # containerd with the same uncompressed layers (coredns and etcd are
+        # both distroless) leaves those layers' compressed blobs, which the
+        # export needs, never fetched - "ctr: failed to get reader: content
+        # digest ...: not found", every time the cache is cold. Fetch the
+        # manifest's content itself, without unpacking; what is there
+        # already is not downloaded again.
+        $c content fetch --platform linux/amd64 "${ref%%:*}@${mdigest}" >/dev/null
         # ctr export has produced a truncated archive more than once here
         # (a tar that ends mid-entry, sizes a few hundred KB short); nothing
         # in its exit status says so. Check the tar and try again, up to
