@@ -275,8 +275,21 @@ verify, boot test, manifest `root_fs`), and verify.sh checks that the disk agree
   from the boot environment.
 
 Test builds (2026-09-25, a throwaway console password): 15.1 and 14.5 pass all 61 checks; pool
-8 GiB -> 15.5 GiB in the boot test, back in 75 s after the reboot. Not accepted on real hardware yet
-(the UFS images were, on Server09).
+8 GiB -> 15.5 GiB in the boot test, back in 75 s after the reboot. With the two fixes above (commit
+7a445b3) they pass 65.
+
+**Acceptance on Server09 (2026-09-26)**, both versions, built from 7a445b3 with a throwaway console
+password and deployed by Ironic *rebuild* onto the disk the earlier ZFS deployments had used (the
+stale labels there): the machine up; `da0` behind the E208i (RAID 0 logical drive), the pool's
+partition grown from 7.7 GiB to 372 GiB up to Ironic's 64 MiB config-2 partition, `zroot` ONLINE
+with no errors, root from `zroot/ROOT/default`, `zpool reguid` in the pool's history at the first
+boot; `kern.console` ttyu0 (the iLO VSP) first; bxe3 at 10Gbase-T with the network data's address,
+the default route via 10.224.0.1 on bxe3, no 169.254 address, one dhcpcd and no dhclient; the
+gateway (0.2 ms), 1.1.1.1 and DNS reachable; `freebsd` and root without a usable password,
+`sysadmin` in wheel; nuageinit without a Lua error. A reboot: SSH back 273 s after the command (the
+DL360's POST; 50 s of FreeBSD), the same hostid and pool GUID, the pool healthy. The first builds of
+these images (without the fixes) failed here as described above: unreachable (IPv4LL), and after
+a rebuild or a redeploy their pool suspended.
 
 ## Acceptance on a DL360 (Server09, 2026-09-24)
 
@@ -312,5 +325,4 @@ LACP path ran only in the QEMU boot test.
 ## Not done yet
 
 - A bond/LACP run on real hardware (a server with both legs cabled).
-- The freebsd-zfs-* images on real hardware (Smart Array in HBA/RAID mode, the pool on `da0`).
 - Dell iDRAC / Supermicro (`ttyS0`): one more declaration.
