@@ -136,8 +136,9 @@ check "nuageinit and growfs enabled, growfs adds no swap" \
 check "nuageinit bare-metal start (rc.conf.d/nuageinit + nuageinit-netdata)" \
     "$(t test -f "$mnt/etc/rc.conf.d/nuageinit" -a -x "$mnt/usr/local/libexec/nuageinit-netdata")"
 check "nuageinit_default_password installed" "$(t test -x "$mnt/usr/local/etc/rc.d/nuageinit_default_password")"
-check "dhcpcd with EUI-64 SLAAC" \
-    "$(test -x "$mnt/usr/local/sbin/dhcpcd" && grep -q '^slaac hwaddr' "$mnt/usr/local/etc/dhcpcd.conf"; echo $?)"
+check "dhcpcd with EUI-64 SLAAC, no IPv4LL" \
+    "$(test -x "$mnt/usr/local/sbin/dhcpcd" && grep -q '^slaac hwaddr' "$mnt/usr/local/etc/dhcpcd.conf" \
+       && grep -q '^noipv4ll' "$mnt/usr/local/etc/dhcpcd.conf"; echo $?)"
 # The package's licence directory carries its version; 10.3.x dies when an
 # IPv4 address it manages is deleted from outside.
 dhcpcd_v=$(ls -d "$mnt"/usr/local/share/licenses/dhcpcd-* 2>/dev/null | sed 's|.*/dhcpcd-||' | head -1)
@@ -153,6 +154,8 @@ if [[ "$ROOT_FS" == zfs ]]; then
         "$(grep -qE '^zfs_load="?YES' "$lc" && rcset zfs_enable YES; echo $?)"
     check "first boot gives the root pool its own GUID (zpool_reguid)" \
         "$(test -x "$mnt/usr/local/etc/rc.d/zpool_reguid" && rcset zpool_reguid_enable YES; echo $?)"
+    check "growfs first clears stale labels where the pool will grow to (zfs-growfs-prepare)" \
+        "$(test -x "$mnt/usr/local/libexec/zfs-growfs-prepare" && grep -q 'start_precmd="zfs_growfs_prepare"' "$mnt/usr/local/etc/rc.conf.d/growfs"; echo $?)"
 fi
 
 # ---- template identity

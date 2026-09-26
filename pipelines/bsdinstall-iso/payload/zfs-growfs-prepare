@@ -1,0 +1,65 @@
+#!/bin/sh
+#
+# /usr/local/libexec/zfs-growfs-prepare - run by growfs, before it grows the
+# root (its start_precmd, set in /usr/local/etc/rc.conf.d/growfs), on a ZFS
+# root: zero the last 2 MiB of the free space the pool's partition is about
+# to grow into. Does nothing on a UFS root.
+#
+# growfs resizes the partition to the end of the free space and runs
+# zpool online -e, which reads the vdev labels ZFS keeps in the last 512 KiB
+# of the grown partition. The image deployed again onto a disk it was on
+# before - Ironic's rebuild does not clean the disk - finds there the labels
+# of the previous deployment's pool, grown to that same end: another pool
+# GUID (zpool_reguid) or an older txg, and ZFS suspends the pool
+# ("uncorrectable I/O failure") before the system is up (Server09,
+# 2026-09-26). Nothing uses those sectors before the partition grows over
+# them.
+#
+# ZFS holds the root partition open exclusively, so the sectors are reached
+# through a temporary partition over them, deleted again.
+#
+# Why not an rc.d script with BEFORE: growfs: scripts in /usr/local/etc/rc.d
+# run only after FILESYSTEMS, and growfs (BEFORE: root) is long done by then.
+
+main()
+{
+	local fsdev pool vdev rawdev disk idx secsize pend fstart fsize n tstart tmp
+	fsdev=$(mount -p | awk '$2 == "/" && $3 == "zfs" { print $1 }')
+	[ -n "$fsdev" ] || return 0
+	pool=${fsdev%%/*}
+	vdev=$(zpool list -v -H -P "$pool" | awk 'END { print $1 }')
+	vdev=${vdev#/dev/}
+	# A label (gpt/zfs0) names its partition in glabel status, as growfs
+	# finds it.
+	if [ "$vdev" != "${vdev%/*}" ]; then
+		rawdev=$(glabel status | awk -v l="$vdev" '$1 == l { print $3 }')
+	else
+		rawdev=$vdev
+	fi
+	case "$rawdev" in
+	*p[0-9]*) disk=${rawdev%p*}; idx=${rawdev##*p} ;;
+	*) echo "zfs_growfs_prepare: cannot tell the partition of $vdev"; return 0 ;;
+	esac
+	gpart recover "$disk" >/dev/null 2>&1
+	secsize=$(diskinfo "$disk" | awk '{ print $2 }')
+	# The partition's end and the free space right after it.
+	pend=$(gpart show "$disk" | awk -v i="$idx" '$3 == i { print $1 + $2 }')
+	set -- $(gpart show "$disk" | awk -v s="$pend" '$1 == s && /- free -/ { print $1, $2 }')
+	fstart=$1; fsize=$2
+	n=$(( 2 * 1024 * 1024 / secsize ))
+	if [ -z "$fsize" ] || [ "$fsize" -lt $(( n * 2 )) ]; then
+		echo "zfs_growfs_prepare: no free space after $rawdev"
+		return 0
+	fi
+	tstart=$(( fstart + fsize - n ))
+	tmp=$(gpart add -t freebsd-ufs -b "$tstart" -s "$n" "$disk" | awk '{ print $1 }')
+	if [ -z "$tmp" ] || [ ! -c "/dev/$tmp" ]; then
+		echo "zfs_growfs_prepare: could not add a partition over the last $n sectors" >&2
+		return 0
+	fi
+	dd if=/dev/zero of="/dev/$tmp" bs=64k conv=sync 2>/dev/null
+	gpart delete -i "${tmp##*p}" "$disk" >/dev/null
+	echo "zfs_growfs_prepare: zeroed sectors $tstart-$(( tstart + n - 1 )) of $disk (the end $rawdev grows to)"
+}
+
+main

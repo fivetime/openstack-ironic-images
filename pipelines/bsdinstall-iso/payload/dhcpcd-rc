@@ -25,6 +25,13 @@
 # address it manages is deleted from outside, "service netif restart"
 # for one - with the default configuration too.
 #
+# No IPv4LL (noipv4ll, in /usr/local/etc/dhcpcd.conf, which every dhcpcd
+# reads): on an interface configured DHCP that gets no lease, dhcpcd's
+# default is a 169.254/16 address and a default route through it, which
+# replaced the network data's static default route on a server with
+# unwired NICs left to ifconfig_DEFAULT (Server09, 2026-09-26: the default
+# route on bxe0, no carrier; the machine unreachable). dhclient never did.
+#
 # The manager reads /var/run/dhcpcd.conf: /usr/local/etc/dhcpcd.conf,
 # then IPv4 off and IPv6 off except on dhcpcd_ipv6_interfaces, then IPv4
 # on for each interface rc asked for. dhcpcd.conf must not end inside an
@@ -89,7 +96,15 @@ ipv4-start)
 	write_conf
 	if manager_pid >/dev/null; then
 		# Reload the configuration and rebind the interface: IPv4 on.
-		# The rebind restarts the interface's IPv6 as well.
+		# The rebind restarts the interface's IPv6 as well. The manager's
+		# control socket first: asked the moment the manager was started
+		# (-b), the command failed ("dhcpcd_control_read: Invalid
+		# argument") and that dhcpcd went on to start as one more daemon
+		# (Server09, 2026-09-26).
+		i=0
+		while [ ! -S /var/run/dhcpcd/sock ] && [ $i -lt 20 ]; do
+			sleep 0.5; i=$((i + 1))
+		done
 		$dhcpcd -n "$ifn"
 	else
 		# rc has not started the manager (yet): start it here, with

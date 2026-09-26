@@ -71,9 +71,17 @@ json.dump({
 subprocess.run(["xorrisofs", "-quiet", "-R", "-J", "-V", "config-2", "-o",
                 os.path.join(work, "config-2.iso"), os.path.join(work, "cd")], check=True)
 GROW = 8 << 30
-ovl = os.path.join(work, "overlay.qcow2")
-subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-F", "raw", "-b",
-                os.path.abspath(disk), ovl, str(os.path.getsize(disk) + GROW)], check=True)
+if ROOT_FS == "zfs":
+    # A raw copy rather than an overlay: the ZFS run deploys the image a
+    # second time onto the same disk (a rebuild), written over it.
+    ovl, ovl_fmt = os.path.join(work, "disk.raw"), "raw"
+    subprocess.run(["cp", "--sparse=always", disk, ovl], check=True)
+    os.truncate(ovl, os.path.getsize(disk) + GROW)
+    subprocess.run(["sgdisk", "-e", ovl], check=True, capture_output=True)
+else:
+    ovl, ovl_fmt = os.path.join(work, "overlay.qcow2"), "qcow2"
+    subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-F", "raw", "-b",
+                    os.path.abspath(disk), ovl, str(os.path.getsize(disk) + GROW)], check=True)
 subprocess.run(["cp", OVMF_VARS, os.path.join(work, "vars.fd")], check=True)
 with socket.socket() as s:
     s.bind(("127.0.0.1", 0))
@@ -85,7 +93,7 @@ for n in (1, 2):
                         f"logfile={work}/console.log", "-serial", "chardev:con"]
     else:
         serial_args += ["-serial", "null"]
-qemu = subprocess.Popen([
+qemu_cmd = [
     "qemu-system-x86_64", "-machine", "q35,accel=kvm", "-cpu", "host", "-m", "2048", "-smp", "2",
     "-display", "none", "-vga", "std", *serial_args,
     "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE}",
@@ -93,14 +101,21 @@ qemu = subprocess.Popen([
     # The disk on SCSI: da0, as behind the server's RAID controller, not
     # the build VM's vtbd0 - a name baked into the image fails here too.
     "-device", "virtio-scsi-pci,id=scsi0",
-    "-drive", f"if=none,id=d0,format=qcow2,file={ovl}", "-device", "scsi-hd,drive=d0,bus=scsi0.0,bootindex=0",
+    "-drive", f"if=none,id=d0,format={ovl_fmt},file={ovl}", "-device", "scsi-hd,drive=d0,bus=scsi0.0,bootindex=0",
     "-drive", f"if=none,id=cd0,format=raw,readonly=on,file={work}/config-2.iso",
     "-device", "scsi-cd,drive=cd0,bus=scsi0.0",
     "-netdev", "user,id=n1,restrict=on", "-device", f"virtio-net-pci,netdev=n1,mac={MAC1}",
     "-netdev", "user,id=n2,restrict=on", "-device", f"virtio-net-pci,netdev=n2,mac={MAC2}",
     "-netdev", f"user,id=n3,restrict=on,hostfwd=tcp:127.0.0.1:{ssh_port}-:22",
     "-device", f"virtio-net-pci,netdev=n3,mac={MAC3}",
-], stdout=open(os.path.join(work, "qemu.log"), "w"), stderr=subprocess.STDOUT)
+    # A fourth NIC the network data does not name either, on a hub with
+    # nothing else: a link, and no DHCP server - a server's cabled-but-idle
+    # or briefly-up port. Left to ifconfig_DEFAULT, it asks DHCP and gets no
+    # lease; dhcpcd's IPv4LL gave such a NIC a 169.254/16 address and the
+    # default route (Server09, 2026-09-26).
+    "-netdev", "hubport,id=n4,hubid=4", "-device", "virtio-net-pci,netdev=n4,mac=52:54:00:00:be:04",
+]
+qemu = subprocess.Popen(qemu_cmd, stdout=open(os.path.join(work, "qemu.log"), "w"), stderr=subprocess.STDOUT)
 
 SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
             "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10", "-p", str(ssh_port)]
@@ -239,6 +254,8 @@ try:
           next((l for l in out.splitlines() if l.startswith("dhcpcd ")), out))
     rc, out = as_root("route -n get default | sed -n 's/.*gateway: //p'")
     check("IPv4 default route from the network data", out.strip() == "10.32.0.1", out)
+    rc, out = as_root("ifconfig -a | grep 'inet 169.254' || echo none")
+    check("no IPv4LL address on a DHCP interface without a lease (vtnet3, noipv4ll)", out.strip() == "none", out)
     rc, out = as_root("cat /etc/rc.conf.d/network; grep -c ifconfig_vtnet2 /etc/rc.conf.d/network || true")
     check("the unnamed NIC left to ifconfig_DEFAULT", out.strip().endswith("0"))
 
@@ -292,6 +309,49 @@ try:
             check("second boot: same hostid and pool GUID, pool healthy, root from the boot environment",
                   after.split()[:2] == before.split()[:2] and "is healthy" in after
                   and after.split()[-1] == "zroot/ROOT/default", " | ".join(after.splitlines()))
+
+        # ---- a rebuild: the image deployed again onto the same disk, as
+        # Ironic's rebuild does - no cleaning, the image written over what
+        # the first deployment left, the backup GPT moved to the end. The
+        # first deployment grew its pool to the disk's end, and its labels
+        # are where the new pool's partition grows to: without
+        # zfs_growfs_prepare, zpool online -e suspends the pool.
+        as_root("poweroff >/dev/null 2>&1 &")
+        try:
+            qemu.wait(180)
+        except subprocess.TimeoutExpired:
+            qemu.kill()
+            qemu.wait(30)
+        with open(disk, "rb") as src, open(ovl, "r+b") as dst:
+            while True:
+                chunk = src.read(4 << 20)
+                if not chunk:
+                    break
+                dst.write(chunk)
+        subprocess.run(["sgdisk", "-e", ovl], check=True, capture_output=True)
+        qemu = subprocess.Popen(qemu_cmd, stdout=open(os.path.join(work, "qemu-rebuild.log"), "w"),
+                                stderr=subprocess.STDOUT)
+        t0 = time.time()
+        up = False
+        while time.time() - t0 < 900 and qemu.poll() is None:
+            if ssh_key("true")[0] == 0:
+                up = True
+                break
+            if "has been suspended" in console_log():
+                break
+            time.sleep(5)
+        check("rebuild: the image deployed again without cleaning comes up", up,
+              "pool suspended" if "has been suspended" in console_log() else f"{int(time.time() - t0)}s")
+        if up:
+            rc, out = as_root("zpool status -x zroot; zpool list -Hp -o size zroot; "
+                              "mount -p | awk '$2 == \"/\" {print $1}'")
+            lines = out.splitlines()
+            psize = int(lines[1]) if len(lines) > 1 and lines[1].isdigit() else 0
+            # Early in the first boot, before syslogd: its line is on the console.
+            zeroed = next((l.strip() for l in console_log().splitlines() if "zfs_growfs_prepare: zeroed" in l), "")
+            check("rebuild: pool healthy and grown again, stale labels cleared first, root from the boot environment",
+                  "is healthy" in out and psize > os.path.getsize(disk) and zeroed != ""
+                  and lines[-1] == "zroot/ROOT/default", " | ".join(lines + [zeroed or "(no zfs_growfs_prepare line)"]))
     if fails:
         rc, out = as_root("tail -30 /var/log/nuageinit.log; cat /etc/rc.conf.d/network /etc/rc.conf.d/routing /etc/rc.conf.d/dhcpcd; "
                           "cat /var/run/dhcpcd.ipv4; tail -12 /var/run/dhcpcd.conf; tail -30 /var/log/daemon.log")

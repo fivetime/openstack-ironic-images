@@ -174,6 +174,22 @@ dhclient. `synchronous_dhclient=YES` because a NIC that reports no link change (
 leaves nobody to ask again after `service netif restart` - dhclient had the same gap - and asking no
 longer blocks the boot.
 
+**No IPv4LL (`noipv4ll` in `/usr/local/etc/dhcpcd.conf`).** dhcpcd's default gives an interface
+configured DHCP that gets no lease a 169.254/16 address - and a default route through it. On
+Server09 (2026-09-26, the first freebsd-zfs deployment) seven NICs are unwired and left to
+`ifconfig_DEFAULT="DHCP"`; bxe0-2 came up for a moment while initialising, dhcpcd gave bxe0 and bxe1
+IPv4LL addresses and put the default route on bxe0 (`default link#5 bxe0`, "bxe0: changing default
+route"), before rc's routing added the network data's `defaultrouter` ("route already in table").
+Replies left through a NIC with no carrier; the switch saw nothing on Et34 and the machine was
+unreachable. dhclient never did IPv4LL, so the UFS images accepted on Server09 before the dhcpcd
+change did not show it. Confirmed on the machine: `noipv4ll`, dhcpcd restarted (it withdrew its
+default route), the static one added - reachable, from outside too. The boot test now has a fourth
+NIC on a QEMU hub with nothing else on it (a link, no DHCP server) left to `ifconfig_DEFAULT`, and
+checks that no interface has a 169.254 address and the default route is the network data's.
+dhcpcd-rc also waits for the manager's control socket before `dhcpcd -n`: asked the moment the
+manager started, one command failed (`dhcpcd_control_read: Invalid argument`) and that dhcpcd went on
+to start as another daemon.
+
 **dhcpcd 10.5.2 or later.** 10.3.x (the 14.5 and 15.1 release sets) dies of SIGSEGV when an IPv4
 address it manages is deleted from outside - `service netif restart` does - with dhcpcd's default
 configuration too, so it is dhcpcd, not this arrangement. 10.5.2 survives and leases the address again
@@ -227,6 +243,24 @@ verify, boot test, manifest `root_fs`), and verify.sh checks that the disk agree
   there) would leave the root pool's import to chance, so a firstboot rc.d script,
   `/usr/local/etc/rc.d/zpool_reguid` (`zpool_reguid_enable=YES`), runs `zpool reguid` on the root
   pool once. The pool name stays `zroot`.
+- **A rebuild (or any deployment onto a disk that had a ZFS image before):** growfs grows the
+  partition to the same end as the previous deployment did, and the previous pool's labels L2/L3
+  are still there - Ironic's rebuild does not clean, and its metadata cleaning wipes only the disk's
+  first and last megabytes, while those labels sit before the config-drive partition. `zpool
+  online -e` reads them, finds another pool (another GUID after zpool_reguid, a newer txg) and ZFS
+  suspends the pool: `Pool 'zroot' has encountered an uncorrectable I/O failure and has been
+  suspended` (Server09, 2026-09-26, after a rebuild and again after undeploy + deploy). Reproduced
+  in QEMU with the agent's steps (the image written byte for byte, `sgdisk -e`, a config-2 partition
+  at the end) and the control that tells it apart: the same with everything past the image zeroed
+  before the second deploy boots. Fix: `/usr/local/libexec/zfs-growfs-prepare`, run by growfs as its
+  `start_precmd` (`/usr/local/etc/rc.conf.d/growfs`), zeroes the last 2 MiB of the free space the
+  partition is about to grow into, through a temporary partition (ZFS holds the root partition open
+  exclusively), and deletes it. Not an rc.d script with `BEFORE: growfs`: `/usr/local/etc/rc.d`
+  runs only after FILESYSTEMS, when growfs (`BEFORE: root`) is long done - the first attempt did
+  exactly that and never ran. The boot test deploys the image a second time onto the same raw disk
+  after the reboot (written over, `sgdisk -e`) and checks that it comes up, the pool healthy and
+  grown, the prepare step on the console. Confirmed on Server09 by a rebuild onto a disk that had
+  the suspended pool's labels.
 - **verify.sh** imports the pool on the build host read-only, **under another name**, with
   `cachefile=none`, searching only the image's partition (`-d`), and **without `-f`** - a pool the
   installer did not export does not import, and that fails the build. It mounts

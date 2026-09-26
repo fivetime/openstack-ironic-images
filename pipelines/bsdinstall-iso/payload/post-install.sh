@@ -103,6 +103,12 @@ install -m 0444 $SEED/payload/rc.conf.d-dhcpcd /usr/local/etc/rc.conf.d/dhcpcd
 install -m 0444 $SEED/payload/dhcpcd-hook-mtu /usr/local/libexec/dhcpcd-hooks/10-mtu
 sed -i '' -E 's/^slaac[[:space:]]+private/slaac hwaddr/' /usr/local/etc/dhcpcd.conf
 grep -q '^slaac hwaddr' /usr/local/etc/dhcpcd.conf
+# No IPv4LL: dhcpcd's default gives an interface that gets no DHCP lease a
+# 169.254/16 address and a default route through it - on a server with
+# unwired NICs that replaced the static default route (see dhcpcd-rc).
+# dhclient never did.
+grep -q '^noipv4ll' /usr/local/etc/dhcpcd.conf || echo noipv4ll >>/usr/local/etc/dhcpcd.conf
+grep -q '^noipv4ll' /usr/local/etc/dhcpcd.conf
 
 # ---- the file systems by GPT label, not by device name: bsdinstall writes
 # /etc/fstab with the build VM's names (/dev/vtbd0p2), and on the server
@@ -143,9 +149,16 @@ fi
 # swap). growfs grows it as it does UFS (gpart resize, zpool online -e).
 # Every machine starts with the build's pool GUID: zpool_reguid gives the
 # root pool a new one on first boot, so that two disks of one machine
-# never carry the same pool.
+# never carry the same pool. zfs-growfs-prepare, run by growfs before it
+# grows the partition (its start_precmd, rc.conf.d/growfs), zeroes the end
+# the partition will grow to: a rebuild (the image deployed again without
+# cleaning) left the previous pool's labels there, and zpool online -e
+# suspended the pool (Server09, 2026-09-26).
 if [ "${ROOT_FS:-ufs}" = zfs ]; then
 	install -m 0555 $SEED/payload/zpool_reguid /usr/local/etc/rc.d/zpool_reguid
+	install -m 0555 $SEED/payload/zfs-growfs-prepare /usr/local/libexec/zfs-growfs-prepare
+	install -d /usr/local/etc/rc.conf.d
+	install -m 0444 $SEED/payload/rc.conf.d-growfs /usr/local/etc/rc.conf.d/growfs
 	sysrc zpool_reguid_enable=YES
 	zpool get -H -o property,value guid,bootfs,ashift zroot | sed 's/^/zpool: /'
 	zfs get -H -o property,value compression,atime zroot | sed 's/^/zfs: /'

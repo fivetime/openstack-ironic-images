@@ -1,0 +1,12 @@
+# /usr/local/etc/rc.conf.d/growfs - sourced by /etc/rc.d/growfs through
+# load_rc_config after it has defined itself. On a ZFS root, clear the
+# previous deployment's stale labels where the pool's partition is about to
+# grow to, before growfs grows it (/usr/local/libexec/zfs-growfs-prepare).
+if [ "$name" = growfs ]; then
+	start_precmd="zfs_growfs_prepare"
+fi
+zfs_growfs_prepare()
+{
+	/usr/local/libexec/zfs-growfs-prepare
+	return 0
+}
