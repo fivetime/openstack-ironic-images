@@ -338,12 +338,34 @@ for k,v in d["components"].items(): print(f"{k}={v}")' "$LAYER_LOCK/artifacts.ya
             for d in proc sys dev dev/pts; do mount --bind "/$d" "$mnt/$d"; done
             mkdir -p "$mnt/run/layer"
             mount --bind -o ro "$cache" "$mnt/run/layer"
-            exec chroot "$mnt" env -i \
+            chroot "$mnt" env -i \
                 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root TERM=dumb \
                 NODE_BOOTSTRAP_MODE=image NODE_BOOTSTRAP_CONF=/dev/null \
                 NODE_BOOTSTRAP_MIRROR=file:///run/layer/mirror \
                 NODE_BOOTSTRAP_IMAGES_DIR=/run/layer/images \
                 "$@" bash /run/layer/install.sh
+
+            # SELinux labels. The chroot runs on a builder without SELinux,
+            # so every file the install wrote - and every one rpm or
+            # ldconfig rewrote, /etc/ld.so.cache and libseccomp included -
+            # has no security.selinux label at all. An enforcing image then
+            # boots and refuses to map them: containerd, the kubelet and
+            # sshd all exit 127 on "avc: denied { map } ... unlabeled_t", in
+            # a loop, on every boot. Relabel the whole root by the images
+            # own policy, with its own setfiles, as diskimage-builder does
+            # for the RHEL family. Nothing to do where SELinux is absent or
+            # disabled (the Ubuntu images use AppArmor).
+            if [[ -f "$mnt/etc/selinux/config" ]]; then
+                sel=$(sed -n "s/^SELINUX=//p" "$mnt/etc/selinux/config")
+                typ=$(sed -n "s/^SELINUXTYPE=//p" "$mnt/etc/selinux/config")
+                fc="/etc/selinux/${typ}/contexts/files/file_contexts"
+                if [[ "$sel" != disabled && -n "$typ" ]]; then
+                    [[ -f "$mnt$fc" ]] || { echo "no $fc in the image to relabel by" >&2; exit 1; }
+                    echo "[layer] relabelling for SELinux ($sel, $typ) by $fc"
+                    chroot "$mnt" setfiles -F -e /proc -e /sys -e /dev -e /run "$fc" /
+                    echo "[layer] relabelled"
+                fi
+            fi
         ' _ "$mnt" "$LAYER_CACHE" \
             K8S_VERSION="$k8s" "${env_kv[@]}" \
             GVISOR_PLATFORM="$platform" NODE_BOOTSTRAP_RUNTIMES="$runtimes" \
