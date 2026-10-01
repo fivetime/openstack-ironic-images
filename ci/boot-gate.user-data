@@ -79,6 +79,13 @@ if ! ip -4 route show default | grep -q .; then
     fail no-default-route
 fi
 
+# The user network's DHCP gives no DNS server, so NetworkManager (Rocky)
+# writes no /etc/resolv.conf at all, and the kubelet refuses to build any
+# sandbox without one ("open /etc/resolv.conf: no such file or directory").
+# A deployed node gets DNS from its network data. An empty file is enough
+# here: nothing in this test resolves a name.
+[ -e /etc/resolv.conf ] || : > /etc/resolv.conf
+
 kubeadm init --config /root/kubeadm.yaml --skip-phases=addon/kube-proxy || fail kubeadm-init
 export KUBECONFIG=/etc/kubernetes/admin.conf
 kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true

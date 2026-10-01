@@ -251,15 +251,16 @@ jobs:
             GATE_TOLERATE="$GATE_TOLERATE" \
             ci/boot-gate.sh "dist/${{ matrix.name }}.raw" '${{ matrix.k8s }}'
         env:
-          # Not exercisable on this runner, measured on 2026-10-01: the runner
-          # is a VM, so a kata guest in the gate VM is three levels of
-          # virtualisation deep, and there only Cloud Hypervisor starts one.
-          # QEMU and Dragonball do not - with the same image and kata release
-          # that runs all seven handlers two levels deep in a Magnum VM. So
-          # these four are reported every run and verified on Nova (two
-          # levels) or hardware (one), not here. crun as the default, gvisor
-          # and both CLH handlers are gated.
-          GATE_TOLERATE: kata kata-dragonball kata-qemu kata-qemu-runtime-rs
+          # Not exercisable on this runner: kata-qemu-runtime-rs, the Rust
+          # runtime's QEMU. The runner is a VM, so a guest in the gate VM sits
+          # three levels of virtualisation deep, and there it did not start
+          # one on 2026-10-01 - while two levels deep, in a Magnum VM, the
+          # same kata release ran it the same day. It is still reported on
+          # every run. Everything else -
+          # crun as the default, gvisor, kata (Dragonball), kata-dragonball,
+          # both QEMU-free CLH handlers and Go kata-qemu - started a pod on
+          # this runner on 2026-10-01 and is gated.
+          GATE_TOLERATE: kata-qemu-runtime-rs
 
       # A RaaS runner has no datacenter DNS and the gateway routes by Host
       # header, so the names have to stay in the URL and be seeded locally.

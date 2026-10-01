@@ -85,11 +85,15 @@ verify 只读镜像,看不出一个 handler 能不能真的起沙箱;而组件�
 默认 handler 起 Pod 并用 `crun state` 证明是 crun,再对每个注册的 handler 各起一个 Pod,全部跑完才给结论;
 两个串口都抓(`serial.log`/`serial1.log`)。任何 handler 失败即判镜像不过,除非它在 `GATE_TOLERATE` 里。
 
-**为什么有 `GATE_TOLERATE`:** runner 本身是 VM,门禁 VM 里的 kata guest 处在第三层虚拟化。2026-10-01
-在 control1(同样是 VM)上实测:这一层只有 Cloud Hypervisor 起得来,QEMU 与 Dragonball 起不来——同一份
-Kata 在 Magnum VM 里(第二层)七个 handler 全过。所以工作流里 `kata kata-dragonball kata-qemu
-kata-qemu-runtime-rs` 每次都列为"此处未验证",要在 Nova(第二层)或真机上验;crun 默认、gvisor、两个 CLH
-handler 在这里把关。
+**为什么有 `GATE_TOLERATE`:** runner 本身是 VM,门禁 VM 里的 kata guest 处在第三层虚拟化。2026-10-01 在
+CI runner 上实测:crun 默认、gvisor、`kata`(Dragonball)、`kata-dragonball`、`kata-qemu`、两个 CLH 都起得来,
+只有 `kata-qemu-runtime-rs`(Rust 运行时的 QEMU)起不来——同一天同一份 Kata 在 Magnum VM 里(第二层)它是能跑的。
+所以工作流只容忍这一个,每次照样列出来;其余全部把关。(control1 也是 VM,在它上面 QEMU 和 Dragonball
+都起不来,只有 CLH 行——嵌套能力随宿主机不同,这个名单是按 CI runner 定的。)
+
+**门禁环境的两处补丁(真实节点不需要):** `restrict=on` 的 DHCP 不给路由,用 10.0.2.2 补默认路由;
+也不给 DNS,Rocky 的 NetworkManager 于是不写 `/etc/resolv.conf`,kubelet 没有这个文件就不建任何沙箱,
+门禁里补一个空文件。真实节点的路由和 DNS 来自网络数据。
 
 ## gVisor 平台
 

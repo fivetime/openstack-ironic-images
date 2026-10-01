@@ -57,6 +57,8 @@ cleanup() {
     [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
     rm -f "$GATE_DIR/overlay.qcow2" "$GATE_DIR/OVMF_VARS.fd" "$GATE_DIR/seed.iso"
     rm -rf "$GATE_DIR/seed"
+    # Run as root by the workflow; the upload step runs as the runner user.
+    chmod -R a+rX "$GATE_DIR" 2>/dev/null || true
 }
 trap cleanup EXIT
 
