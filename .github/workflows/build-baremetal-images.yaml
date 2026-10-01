@@ -33,6 +33,10 @@ on:
         description: 'Kubernetes versions to layer on each image, space separated (empty = base images only)'
         type: string
         default: ''
+      layered_only:
+        description: 'With k8s_versions: build and push only the layered images, not the base images again'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -57,6 +61,7 @@ jobs:
         env:
           WANTED: ${{ inputs.images }}
           K8S_VERSIONS: ${{ inputs.k8s_versions }}
+          LAYERED_ONLY: ${{ inputs.layered_only }}
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends python3-yaml jq
@@ -98,7 +103,10 @@ jobs:
               pkgs = " ".join((decl.get("source") or {}).get("packages") or [])
               base = {"image": name, "iso": iso, "pkgs": pkgs,
                       "cache": size and size < 5_000_000_000}
-              rows.append(dict(base, k8s="", name=name))
+              # A layered row builds its own base inside the job, so dropping
+              # the base row only stops the base image from being pushed again.
+              if not (versions and os.environ.get("LAYERED_ONLY") == "true"):
+                  rows.append(dict(base, k8s="", name=name))
               for v in versions:
                   if not os.path.isfile(f"layers/kubernetes/lock/{v}/packages-{name}.yaml"):
                       sys.exit(f"no package lock for {name} at Kubernetes {v}: run layers/kubernetes/resolve-packages.sh {v} {name}")
@@ -229,6 +237,30 @@ jobs:
           jq . "dist/${{ matrix.name }}.manifest.json"
           cat "dist/${{ matrix.name }}.sha256"
 
+      # verify.sh reads the image; this boots it. Every layer runtime comes from
+      # upstream's newest release when a lock is resolved, and a handler that
+      # registers but cannot start a sandbox (runsc without its gvisor-bin/
+      # sidecars, a kata that cannot boot a guest here) passes every read-only
+      # check. The image becomes a one-node cluster under QEMU and runs a pod
+      # under the default handler - which must be crun - and under each other
+      # handler, before anything is pushed.
+      - name: Boot gate (layered images)
+        if: ${{ matrix.k8s != '' }}
+        run: |
+          sudo env GATE_DIR="$PWD/dist/gate-${{ matrix.name }}" \
+            GATE_TOLERATE="$GATE_TOLERATE" \
+            ci/boot-gate.sh "dist/${{ matrix.name }}.raw" '${{ matrix.k8s }}'
+        env:
+          # Not exercisable on this runner, measured on 2026-10-01: the runner
+          # is a VM, so a kata guest in the gate VM is three levels of
+          # virtualisation deep, and there only Cloud Hypervisor starts one.
+          # QEMU and Dragonball do not - with the same image and kata release
+          # that runs all seven handlers two levels deep in a Magnum VM. So
+          # these four are reported every run and verified on Nova (two
+          # levels) or hardware (one), not here. crun as the default, gvisor
+          # and both CLH handlers are gated.
+          GATE_TOLERATE: kata kata-dragonball kata-qemu kata-qemu-runtime-rs
+
       # A RaaS runner has no datacenter DNS and the gateway routes by Host
       # header, so the names have to stay in the URL and be seeded locally.
       - name: Point the OpenStack public names at the gateway
@@ -305,5 +337,14 @@ jobs:
         with:
           name: install-${{ matrix.image }}
           path: dist/${{ matrix.image }}.install/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload the boot gate's serial log on failure
+        if: ${{ failure() && matrix.k8s != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-${{ matrix.name }}
+          path: dist/gate-${{ matrix.name }}/serial*.log
           retention-days: 7
           if-no-files-found: ignore

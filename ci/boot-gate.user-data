@@ -1,0 +1,145 @@
+#!/bin/bash
+# User-data for ci/boot-gate.sh: make this machine a one-node Kubernetes
+# cluster with nothing but what the image carries, then start a pod under the
+# default handler and under every handler containerd has registered.
+# @K8S@ is replaced by boot-gate.sh. Reports through the serial console; the
+# last line is the verdict, "GATE_RESULT status=PASS|FAIL ...".
+#
+# The same test the VM node images get in openstack-magnum-images' hack/gate.sh.
+
+# Both serial ports explicitly: /dev/console is whichever console= came last
+# on the command line (these images also carry console=tty0), and the serial
+# console is ttyS0 or ttyS1 depending on the image.
+exec > >(tee /dev/ttyS0 /dev/ttyS1) 2>&1
+set -x
+
+fail() {
+    echo "=== GATE DIAGNOSTICS (step=$1) ==="
+    kubectl get nodes -o wide 2>&1 | tail -5
+    kubectl get pods -A -o wide 2>&1 | tail -20
+    kubectl describe pod "${2:-gate-default}" 2>&1 | tail -30
+    kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -20
+    echo "--- CRI images ---"; crictl images 2>&1 | head -15
+    echo "--- kubelet ---"; journalctl -u kubelet --no-pager -n 30 2>&1
+    echo "--- containerd ---"; journalctl -u containerd --no-pager -n 30 2>&1
+    echo "=== END DIAGNOSTICS ==="
+    echo "GATE_RESULT status=FAIL step=$1"
+    exit 1
+}
+
+# The bridge plugin from /opt/cni/bin: the node reaches Ready without pulling a
+# CNI image. isDefaultGateway alone - a route in the IPAM as well makes the
+# second RTM_NEWROUTE fail with "file exists" and no sandbox starts.
+mkdir -p /etc/cni/net.d
+cat > /etc/cni/net.d/10-gate-bridge.conf <<'CNI'
+{"cniVersion":"1.0.0","name":"gate","type":"bridge","bridge":"cni0",
+ "isDefaultGateway":true,
+ "ipam":{"type":"host-local","subnet":"10.244.0.0/16"}}
+CNI
+
+# imagePullPolicy: Never turns "the control-plane images are preloaded" into an
+# assertion kubeadm enforces. The VM has no route out anyway.
+cat > /root/kubeadm.yaml <<'KUBEADM'
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+nodeRegistration:
+  criSocket: unix:///var/run/containerd/containerd.sock
+  imagePullPolicy: Never
+timeouts:
+  controlPlaneComponentHealthCheck: 8m0s
+  kubeletHealthCheck: 8m0s
+  kubernetesAPICall: 5m0s
+  etcdAPICall: 4m0s
+  tlsBootstrap: 8m0s
+  discovery: 5m0s
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: v@K8S@
+networking:
+  podSubnet: 10.244.0.0/16
+KUBEADM
+
+# kubeadm takes its advertise address from the default route. The gate's
+# QEMU user network runs with restrict=on, and its DHCP then hands out an
+# address but no router, so add one via the user network's own gateway
+# (10.0.2.2) - nothing answers behind it, the test stays offline. The lease
+# itself can land after cloud-init reaches this point, so wait for the
+# address first.
+for i in $(seq 1 60); do
+    ip -4 -o addr show scope global | grep -q . && break
+    sleep 2
+done
+if ! ip -4 route show default | grep -q .; then
+    dev=$(ip -4 -o addr show scope global | awk '{print $2; exit}')
+    [ -n "$dev" ] && ip route add default via 10.0.2.2 dev "$dev"
+fi
+if ! ip -4 route show default | grep -q .; then
+    ip -br addr; ip route; nmcli -t device 2>/dev/null || networkctl 2>/dev/null || true
+    fail no-default-route
+fi
+
+kubeadm init --config /root/kubeadm.yaml --skip-phases=addon/kube-proxy || fail kubeadm-init
+export KUBECONFIG=/etc/kubernetes/admin.conf
+kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+
+for i in $(seq 1 60); do
+    kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' \
+        2>/dev/null | grep -q True && break
+    sleep 5
+done
+for i in $(seq 1 60); do
+    kubectl -n default get serviceaccount default >/dev/null 2>&1 && break
+    sleep 5
+done
+
+# The node's own sandbox image, read from its containerd config: it is
+# preloaded, and it is what containerd will actually use.
+PAUSE=$(containerd --config /etc/containerd/config.toml config dump 2>/dev/null |
+        sed -nE "s/^\s*sandbox(_image)? = ['\"]([^'\"]+)['\"].*/\2/p" | head -1)
+[ -n "$PAUSE" ] || fail no-sandbox-image
+
+# start_pod <handler>: 0 when the pod reached Ready, 1 when it did not (with
+# its describe printed). The default handler is checked separately below.
+start_pod() {
+    h=$1
+    pod=gate-$h
+    rc=
+    if [ "$h" != default ]; then
+        printf 'apiVersion: node.k8s.io/v1\nkind: RuntimeClass\nmetadata: {name: %s}\nhandler: %s\n' \
+            "$h" "$h" | kubectl apply -f - >/dev/null || return 1
+        rc="--overrides={\"spec\":{\"runtimeClassName\":\"$h\"}}"
+    fi
+    for i in $(seq 1 12); do
+        kubectl run "$pod" --image="$PAUSE" --image-pull-policy=Never --restart=Never $rc && break
+        [ "$i" = 12 ] && return 1
+        sleep 5
+    done
+    kubectl wait --for=condition=Ready "pod/$pod" --timeout=240s && return 0
+    echo "=== HANDLER $h DID NOT START A POD ==="
+    kubectl describe pod "$pod" 2>&1 | tail -15
+    return 1
+}
+
+# Default first: crun keeps its own state layout under the root the runc shim
+# hands it, so `crun state` answers only for a container crun itself created.
+start_pod default || fail pod-ready-default gate-default
+CID=$(crictl ps --name gate-default -q | head -1)
+[ -n "$CID" ] || fail default-no-container gate-default
+crun --root /run/containerd/runc/k8s.io state "$CID" >/dev/null ||
+    fail default-runtime-not-crun gate-default
+kubectl delete pod gate-default --wait=true --timeout=120s >/dev/null
+
+# Then every registered handler, one at a time (each kata handler asks for a
+# 2 GB guest), and all of them even after one fails: the verdict names every
+# handler that did not start a pod, and boot-gate.sh decides which of those
+# it can accept on this runner.
+HANDLERS=$(containerd --config /etc/containerd/config.toml config dump 2>/dev/null |
+           sed -n 's|.*containerd\.runtimes\.\([a-z0-9-]*\)\]$|\1|p' | sort -u | grep -vx runc)
+OK=; BAD=
+for h in $HANDLERS; do
+    if start_pod "$h"; then OK="${OK:+$OK,}$h"; else BAD="${BAD:+$BAD,}$h"; fi
+    kubectl delete pod "gate-$h" --wait=true --timeout=180s >/dev/null 2>&1 || true
+done
+
+echo "GATE_RESULT status=PASS kubelet=$(kubelet --version | awk '{print $2}') default=crun handlers=${OK:-none} failed=${BAD:-none} containerd=$(containerd --version | awk '{print $3}')"
