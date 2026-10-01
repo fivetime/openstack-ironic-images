@@ -18,7 +18,8 @@ requested:
 - zstd
 - tar
 - gzip
-resolved_at: '2026-09-09T18:21:07Z'
+- container-selinux
+resolved_at: '2026-10-01T22:55:33Z'
 packages:
 - file: ca-certificates-2025.2.80_v9.0.305-102.el10.noarch.rpm
   sha256: fb3e6f93a2cc5b162f30e4641d937d58fa762ed482795da8ae21972b1f6a2193
@@ -30,6 +31,11 @@ packages:
   size: 240097
   iso: rocky-10-dvd
   path: AppStream/Packages/c/conntrack-tools-1.4.8-4.el10.x86_64.rpm
+- file: container-selinux-2.246.0-1.el10.noarch.rpm
+  sha256: 413350fc466d619a4a2831e6b01175cf752525e240e60509f122ff6b59059a1d
+  size: 58819
+  iso: rocky-10-dvd
+  path: AppStream/Packages/c/container-selinux-2.246.0-1.el10.noarch.rpm
 - file: curl-8.12.1-4.el10.x86_64.rpm
   sha256: 028c7515501e4267bc67267e0514b32aa54bc0f876be39af15024b789c7a9899
   size: 222533

@@ -3,19 +3,19 @@
 layer: kubernetes
 kubernetes: 1.37.0
 arch: amd64
-resolved_at: '2026-09-09T22:08:27Z'
+resolved_at: '2026-10-01T22:54:45Z'
 script:
-  url: https://raw.githubusercontent.com/fivetime/magnum-cluster-api/v0.38.2-fivetime.12/data/node-bootstrap/install.sh
-  tag: v0.38.2-fivetime.12
-  sha256: 4767d275eaa4c3d14ee2d5a03ad2008cd1cf8174ca66f59d57b8a164c85c219f
+  url: https://raw.githubusercontent.com/fivetime/magnum-cluster-api/v0.38.2-fivetime.14/data/node-bootstrap/install.sh
+  tag: v0.38.2-fivetime.14
+  sha256: 77d2bc15a960f0c86194f3392595b347494a0dd7e4d7bb274d63c301f4558a49
 components:
-  CONTAINERD_VERSION: 2.3.5
-  RUNC_VERSION: 1.5.1
-  CRUN_VERSION: 1.29.1
+  CONTAINERD_VERSION: 2.4.1
+  RUNC_VERSION: 1.5.2
+  CRUN_VERSION: 1.30.1
   CNI_PLUGINS_VERSION: 1.9.1
   CRI_TOOLS_VERSION: 1.37.0
-  GVISOR_RELEASE: '20260817.0'
-  KATA_VERSION: 4.1.0
+  GVISOR_RELEASE: '20260928.0'
+  KATA_VERSION: 4.2.0
 artifacts:
 - path: dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubeadm
   sha256: 9406f2e75c7fc99391f5fb0575b07914f2d90750d2b8c2c473e9c9c5194c9352
@@ -41,49 +41,41 @@ artifacts:
   sha256: 6086988dc1f24f07cc6ae89c7f035242d7860a9be26cebecae19e57330e8c51c
   size: 64
   verified_by: checksum-file
-- path: github.com/containerd/containerd/releases/download/v2.3.5/containerd-2.3.5-linux-amd64.tar.gz
-  sha256: 2f0a095a71e3262d0d91ff0e50e2e4ae73c3866c4d1ff6a15f341097fba3dd44
-  size: 34581187
-  verified_by: upstream:github.com/containerd/containerd/releases/download/v2.3.5/containerd-2.3.5-linux-amd64.tar.gz.sha256sum
-- path: github.com/containerd/containerd/releases/download/v2.3.5/containerd-2.3.5-linux-amd64.tar.gz.sha256sum
-  sha256: 7767073303284a260acb6d5d5f00e93eded99e25c19ad8e5c6f22d270f15b879
+- path: github.com/containerd/containerd/releases/download/v2.4.1/containerd-2.4.1-linux-amd64.tar.gz
+  sha256: d65eda6a188aac1006848d8060099be88ba9c4bcddbfd9a23a961194710d0dd4
+  size: 35866168
+  verified_by: upstream:github.com/containerd/containerd/releases/download/v2.4.1/containerd-2.4.1-linux-amd64.tar.gz.sha256sum
+- path: github.com/containerd/containerd/releases/download/v2.4.1/containerd-2.4.1-linux-amd64.tar.gz.sha256sum
+  sha256: 7e90ce90d42d9d30e7726be0d6b71f4585a1e5ff39b138e985c7c73f627fdf4d
   size: 102
   verified_by: checksum-file
-- path: github.com/opencontainers/runc/releases/download/v1.5.1/runc.amd64
-  sha256: 177df879d50c913eb205e898d5c1c05a18f574053c0ce5524c471208eaf06f6f
-  size: 11437312
-  verified_by: upstream:github.com/opencontainers/runc/releases/download/v1.5.1/runc.sha256sum
-- path: github.com/opencontainers/runc/releases/download/v1.5.1/runc.sha256sum
-  sha256: 20b757d5c50f33ccf6031703b859822a3ef5f0ef26bff35fedd2ff92c6d297e0
-  size: 1044
+- path: github.com/opencontainers/runc/releases/download/v1.5.2/runc.amd64
+  sha256: 599f6f94ff8c5057241eff0d54c3c74f95c34935b6457b33fe545defc61e9488
+  size: 10866512
+  verified_by: upstream:github.com/opencontainers/runc/releases/download/v1.5.2/runc.sha256sum
+- path: github.com/opencontainers/runc/releases/download/v1.5.2/runc.sha256sum
+  sha256: 1922bc06670a35b95f9d9c0e730294482717a2660a538c4ea6d5ccba7eb665af
+  size: 1239
   verified_by: checksum-file
-- path: github.com/containers/crun/releases/download/1.29.1/crun-1.29.1-linux-amd64
-  sha256: 0a5ea25cafe618bbfbf1c747871155063619f18025ccdd8ad648c97633f35d57
-  size: 3580152
+- path: github.com/containers/crun/releases/download/1.30.1/crun-1.30.1-linux-amd64
+  sha256: 86d1e6a0e76945975d3aebfab39cbc6a26eea15f1c3fc66b6776d19e5dc346a0
+  size: 3588408
   verified_by: recorded-at-resolve
-- path: storage.googleapis.com/gvisor/releases/release/20260817.0/x86_64/runsc
-  sha256: 048b89aada69dc3333422e139d6e9d02f8ab06bda52398060e0fbdacca00074c
-  size: 105378363
-  verified_by: upstream:storage.googleapis.com/gvisor/releases/release/20260817.0/x86_64/runsc.sha512
-- path: storage.googleapis.com/gvisor/releases/release/20260817.0/x86_64/runsc.sha512
-  sha256: 48664807f2822e07ef1bb25ca07f69aae94b1f01f85e689346c44493780a0931
-  size: 136
+- path: storage.googleapis.com/gvisor/releases/release/20260928.0/x86_64/gvisor.tar.zstd
+  sha256: 1f2a732d12072eda6b8a64eccf9829fe9f4a1893d3292a7e8005a82089811d8d
+  size: 129758317
+  verified_by: upstream:storage.googleapis.com/gvisor/releases/release/20260928.0/x86_64/gvisor.tar.zstd.sha512
+- path: storage.googleapis.com/gvisor/releases/release/20260928.0/x86_64/gvisor.tar.zstd.sha512
+  sha256: 206ce3a270056a7734533225155d5ce4869ace5d9157fa66cea54e5d39ddbdbb
+  size: 146
   verified_by: checksum-file
-- path: storage.googleapis.com/gvisor/releases/release/20260817.0/x86_64/containerd-shim-runsc-v1
-  sha256: cc9710d432998a3ce5df84d4224dd7f2ade0baaafa77ff7cc71d2da05ef0a065
-  size: 43381028
-  verified_by: upstream:storage.googleapis.com/gvisor/releases/release/20260817.0/x86_64/containerd-shim-runsc-v1.sha512
-- path: storage.googleapis.com/gvisor/releases/release/20260817.0/x86_64/containerd-shim-runsc-v1.sha512
-  sha256: fd450ee30b942c4401c596aef5bb65f336a99ebd74ecc81e197e239e3cc1651a
-  size: 155
-  verified_by: checksum-file
-- path: github.com/kata-containers/kata-containers/releases/download/4.1.0/kata-static-4.1.0-amd64.tar.zst
-  sha256: 3dc6b69c4acb787b967b04b64599a20d02a8beb1a8eaab3084110df9d0b08c96
-  size: 969565384
+- path: github.com/kata-containers/kata-containers/releases/download/4.2.0/kata-static-4.2.0-amd64.tar.zst
+  sha256: b828904fa3f1e49ddd7dc799c72cb1503cd1e772d354c3987c8d4189b2a623a8
+  size: 996647537
   verified_by: recorded-at-resolve
-- path: github.com/kata-containers/kata-containers/releases/download/4.1.0/kata-go-static-4.1.0-amd64.tar.zst
-  sha256: 8b32080424c884238ee8d52060fdfd060fbe2b5fdfa4eb9ff2772b382b432b55
-  size: 1218710166
+- path: github.com/kata-containers/kata-containers/releases/download/4.2.0/kata-go-static-4.2.0-amd64.tar.zst
+  sha256: 7dda31ca54b397cbf8165f620d6041872d3c45b7a77383ce0e86f76a06e103d0
+  size: 1260982791
   verified_by: recorded-at-resolve
 - path: github.com/containernetworking/plugins/releases/download/v1.9.1/cni-plugins-linux-amd64-v1.9.1.tgz
   sha256: b98f74a0f8522f0a83867178729c1aa70f2158f90c45a2ca8fa791db1c76b303
