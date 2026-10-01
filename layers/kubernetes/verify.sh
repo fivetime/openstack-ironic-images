@@ -46,6 +46,10 @@ CONTAINERD=$(want CONTAINERD_VERSION); RUNC=$(want RUNC_VERSION); CRUN=$(want CR
 GVISOR=$(want GVISOR_RELEASE); KATA=$(want KATA_VERSION); CRI=$(want CRI_TOOLS_VERSION)
 PLATFORM=$(yq "$SCRIPT_DIR/layer.yaml" 'd["gvisor_platform"]')
 RUNTIMES=$(yq "$SCRIPT_DIR/layer.yaml" 'd["runtimes"]')
+# The installer revision this lock was built with (v0.38.2-fivetime.<N>); what
+# it is expected to have installed depends on it.
+SCRIPT_TAG=$(yq "$LOCK_DIR/artifacts.yaml" 'd["script"]["tag"]')
+SCRIPT_REV=$(sed -n 's/.*-fivetime\.\([0-9]*\)$/\1/p' <<<"$SCRIPT_TAG"); SCRIPT_REV=${SCRIPT_REV:-0}
 
 # 1 The three Kubernetes binaries, at the locked version, by their own word.
 k8s_bins() {
@@ -74,6 +78,15 @@ handlers_ok() {
     [[ " $handlers " == *" runc "* ]] || return 1
     [[ " $RUNTIMES " == *" gvisor "* ]] && { [[ " $handlers " == *" gvisor "* ]] || return 1; }
     [[ " $RUNTIMES " == *" kata "* ]] && { for h in kata-qemu kata-clh kata-qemu-runtime-rs kata-clh-runtime-rs kata-dragonball; do [[ " $handlers " == *" $h "* ]] || return 1; done; }
+    # "kata" - a VM without choosing the VMM - is Dragonball. The installer
+    # registers it from v0.38.2-fivetime.13 on; a lock pinned to an older
+    # script is checked as it was built.
+    if [[ " $RUNTIMES " == *" kata "* ]] && (( SCRIPT_REV >= 13 )); then
+        [[ " $handlers " == *" kata "* ]] || { echo "      no bare kata handler" >&2; return 1; }
+        sed -n '/runtimes\.kata\.options\]/,/^ *\[/p' "$ROOT/etc/containerd/conf.d/50-kata.toml" |
+            grep -q "ConfigPath = '/etc/kata-containers/configuration-dragonball.toml'" ||
+            { echo "      the kata handler is not Dragonball" >&2; return 1; }
+    fi
     return 0
 }
 chk "containerd handlers: ${handlers}" "a RuntimeClass the driver creates would admit pods this node cannot run" handlers_ok
@@ -86,7 +99,16 @@ chk "default handler executes crun" "runc runs while the manifest says crun" \
 gvisor_ok() {
     [[ -x "$ROOT/usr/bin/runsc" && -x "$ROOT/usr/bin/containerd-shim-runsc-v1" ]] || return 1
     in_img /usr/bin/runsc --version | grep -q "release-${GVISOR}" || { echo "      runsc: $(in_img /usr/bin/runsc --version | head -1)" >&2; return 1; }
-    grep -q "^platform = \"${PLATFORM}\"" "$ROOT/etc/containerd/runsc.toml"
+    grep -q "^platform = \"${PLATFORM}\"" "$ROOT/etc/containerd/runsc.toml" || return 1
+    # A runsc that has --sidecar-usage-policy (the tarball releases, from
+    # 20260831.0) starts every sandbox through gvisor-bin/ beside its real
+    # executable and, by default, refuses to start one without it.
+    # runsc prints its flags on stderr, which in_img drops - so chroot directly.
+    if chroot "$ROOT" /usr/bin/runsc flags 2>&1 | grep -q -- '-sidecar-usage-policy'; then
+        local real; real=$(realpath "$ROOT/usr/bin/runsc")
+        [[ -x "$(dirname "$real")/gvisor-bin/gvisor_sentry" ]] ||
+            { echo "      no gvisor-bin/gvisor_sentry beside ${real#"$ROOT"}" >&2; return 1; }
+    fi
 }
 [[ " $RUNTIMES " == *" gvisor "* ]] && chk "gvisor ${GVISOR} on the ${PLATFORM} platform" "sandbox pods fail or run on the wrong platform" gvisor_ok
 
@@ -143,12 +165,54 @@ chk "conntrack, socat, ethtool installed" "kubeadm preflight refuses to run" pkg
 swap_ok() { ! grep -qE '^[^#]\S*\s+\S+\s+swap\s' "$ROOT/etc/fstab" && [[ ! -e "$ROOT/swap.img" && ! -e "$ROOT/swapfile" ]]; }
 chk "no swap in fstab, no swap file" "the kubelet exits at start and kubeadm init times out" swap_ok
 
+# 13 SELinux: everything the layer wrote carries a label. The install runs
+#    in a chroot on a builder without SELinux, so unless the pipeline relabels
+#    afterwards every new file - and every one rpm or ldconfig rewrote - has
+#    no security.selinux at all, and an enforcing image denies the map of
+#    ld.so.cache and libseccomp to containerd, the kubelet and sshd alike.
+#    Read here as xattrs; nothing needs SELinux on the builder.
+selinux_labelled() {
+    local cfg="$ROOT/etc/selinux/config"
+    [[ -f "$cfg" ]] || return 0
+    [[ "$(sed -n 's/^SELINUX=//p' "$cfg")" == disabled ]] && return 0
+    python3 - "$ROOT" <<'PYLAB'
+import os, sys
+root = sys.argv[1]
+missing = []
+for top in ("usr", "etc", "opt", "var/lib"):
+    for dp, dn, fn in os.walk(os.path.join(root, top)):
+        for x in dn + fn:
+            p = os.path.join(dp, x)
+            try:
+                os.getxattr(p, "security.selinux", follow_symlinks=False)
+            except OSError:
+                missing.append(p[len(root):])
+if missing:
+    print(f"      {len(missing)} unlabeled, e.g. {missing[:5]}", file=sys.stderr)
+    sys.exit(1)
+PYLAB
+}
+chk "SELinux labels on everything under /usr /etc /opt /var/lib (where SELinux is on)" "an enforcing node denies containerd, the kubelet and sshd" selinux_labelled
+
+# 14 SELinux: containerd runs in the container runtime domain. That needs the
+#    container-selinux module and a relabel after it; without it containerd is
+#    an unconfined service and systemd refuses crun's eBPF device filter, so
+#    an enforcing node starts no sandbox at all.
+containerd_domain() {
+    local cfg="$ROOT/etc/selinux/config"
+    [[ -f "$cfg" ]] || return 0
+    [[ "$(sed -n 's/^SELINUX=//p' "$cfg")" == disabled ]] && return 0
+    local l; l=$(python3 -c 'import os,sys; print(os.getxattr(sys.argv[1],"security.selinux").rstrip(b"\0").decode())' "$ROOT/usr/bin/containerd" 2>/dev/null)
+    [[ "$l" == *:container_runtime_exec_t:* ]] || { echo "      /usr/bin/containerd is ${l:-unlabeled}" >&2; return 1; }
+}
+chk "containerd labelled container_runtime_exec_t (where SELinux is on)" "an enforcing node starts no sandbox" containerd_domain
+
 # 12 Nothing of the build left behind in the image.
 leftovers_ok() { [[ ! -e "$ROOT/run/layer" && ! -e "$ROOT/tmp/containerd-import.log" && ! -e "$ROOT/run/containerd/containerd.sock" ]]; }
 chk "no build leftovers (/run/layer, import log, stale socket)" "the image carries the builder's state" leftovers_ok
 
 # ------------------------------------------------------------- manifest
-kata_handlers=$(sed -n 's|.*runtimes\.\(kata-[a-z0-9-]*\)\]$|\1|p' "$ROOT/etc/containerd/conf.d/50-kata.toml" 2>/dev/null | paste -sd, -)
+kata_handlers=$(sed -n 's|.*runtimes\.\(kata[a-z0-9-]*\)\]$|\1|p' "$ROOT/etc/containerd/conf.d/50-kata.toml" 2>/dev/null | paste -sd, -)
 runsc_v=$(in_img /usr/bin/runsc --version 2>/dev/null | awk 'NR==1{print $NF}')
 echo "manifest: $(python3 -c "import json,sys; print(json.dumps({
   'k8s_version': sys.argv[1], 'containerd_version': sys.argv[2], 'runc_version': sys.argv[3], 'crun_version': sys.argv[4],
