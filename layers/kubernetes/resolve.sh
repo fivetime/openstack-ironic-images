@@ -7,10 +7,11 @@
 # leaves every artifact in the cache (upstream/cache/layers/kubernetes/<ver>/)
 # on the way - resolving means fetching once and writing down what came back.
 #
-# Component versions are the pinned installer script's own defaults, so the
-# bare-metal image matches what a first-boot node installs; set
-# CONTAINERD_VERSION, RUNC_VERSION, CRUN_VERSION, CNI_PLUGINS_VERSION,
-# CRI_TOOLS_VERSION, GVISOR_RELEASE or KATA_VERSION to diverge on purpose.
+# Component versions are each one's newest stable upstream release when the
+# lock is resolved (COMPONENTS=script takes the pinned installer script's own
+# defaults instead); set CONTAINERD_VERSION, RUNC_VERSION, CRUN_VERSION,
+# CNI_PLUGINS_VERSION, CRI_TOOLS_VERSION, GVISOR_RELEASE or KATA_VERSION to
+# pin one on purpose. GH_TOKEN, when set, is used for the GitHub API.
 #
 # Checksums: where upstream publishes one (dl.k8s.io, containerd, runc,
 # cni-plugins, cri-tools, gvisor) the download is verified against it and
@@ -62,15 +63,68 @@ echo "$SCRIPT_SHA  $SCRIPT" | sha256sum -c --quiet - || die "install.sh at $SCRI
 default_of() {
     sed -n "s/^${1}=\${${1}:-\([^}]*\)}.*/\1/p" "$SCRIPT" | head -1
 }
-CONTAINERD_VERSION=${CONTAINERD_VERSION:-$(default_of CONTAINERD_VERSION)}
-RUNC_VERSION=${RUNC_VERSION:-$(default_of RUNC_VERSION)}
-CRUN_VERSION=${CRUN_VERSION:-$(default_of CRUN_VERSION)}
-CNI_PLUGINS_VERSION=${CNI_PLUGINS_VERSION:-$(default_of CNI_PLUGINS_VERSION)}
-CRI_TOOLS_VERSION=${CRI_TOOLS_VERSION:-${K8S%.*}.0}
-GVISOR_RELEASE=${GVISOR_RELEASE:-$(default_of GVISOR_RELEASE)}
-KATA_VERSION=${KATA_VERSION:-$(default_of KATA_VERSION)}
+# Which component versions a new lock takes.
+#
+# By default, each one's newest stable upstream release at the moment the lock
+# is resolved - the same rule openstack-magnum-images applies to the VM node
+# images. The lock then pins it, so the build stays offline and repeatable;
+# moving a version is resolving a new lock. COMPONENTS=script takes the
+# installer script's own defaults instead (what a first-boot node installs),
+# and any single *_VERSION / GVISOR_RELEASE set in the environment wins over
+# either.
+COMPONENTS=${COMPONENTS:-latest}
+gh_api() {
+    local url=$1
+    if [[ -n "${GH_TOKEN:-}" ]]; then retry curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" "$url"
+    else retry curl -fsS "$url"; fi
+}
+# newest <owner/repo> [<major.minor>] -> newest non-draft, non-prerelease x.y.z
+newest() {
+    local repo=$1 series=${2:-} best
+    best=$(gh_api "https://api.github.com/repos/${repo}/releases?per_page=100" |
+        jq -r '.[] | select(.draft == false and .prerelease == false) | .tag_name' |
+        sed -n 's/^v\?\([0-9]\+\.[0-9]\+\.[0-9]\+\)$/\1/p' |
+        { if [[ -n "$series" ]]; then grep "^${series}\." || true; else cat; fi; } | sort -V | tail -1)
+    [[ -n "$best" ]] || return 1
+    printf '%s\n' "$best"
+}
+# gVisor has no tagged GitHub releases; its bucket has one directory per dated
+# release. The newest that carries a tarball for this architecture.
+newest_gvisor() {
+    local rel
+    for rel in $(retry curl -fsS "https://storage.googleapis.com/storage/v1/b/gvisor/o?prefix=releases/release/&delimiter=/&maxResults=1000" |
+                 grep -oE 'releases/release/[0-9]{8}\.[0-9]+/' | sed 's|releases/release/||; s|/$||' |
+                 sort -t. -k1,1nr -k2,2nr | head -5); do
+        curl -fsI "https://storage.googleapis.com/gvisor/releases/release/${rel}/x86_64/gvisor.tar.zstd" >/dev/null &&
+            { printf '%s\n' "$rel"; return 0; }
+    done
+    return 1
+}
+case "$COMPONENTS" in
+    latest)
+        CONTAINERD_VERSION=${CONTAINERD_VERSION:-$(newest containerd/containerd)}
+        RUNC_VERSION=${RUNC_VERSION:-$(newest opencontainers/runc)}
+        CRUN_VERSION=${CRUN_VERSION:-$(newest containers/crun)}
+        CNI_PLUGINS_VERSION=${CNI_PLUGINS_VERSION:-$(newest containernetworking/plugins)}
+        # cri-tools follows Kubernetes minor for minor; a fresh minor can land
+        # before its cri-tools does, so fall back to the newest there is.
+        CRI_TOOLS_VERSION=${CRI_TOOLS_VERSION:-$(newest kubernetes-sigs/cri-tools "${K8S%.*}" || newest kubernetes-sigs/cri-tools)}
+        GVISOR_RELEASE=${GVISOR_RELEASE:-$(newest_gvisor)}
+        KATA_VERSION=${KATA_VERSION:-$(newest kata-containers/kata-containers)}
+        ;;
+    script)
+        CONTAINERD_VERSION=${CONTAINERD_VERSION:-$(default_of CONTAINERD_VERSION)}
+        RUNC_VERSION=${RUNC_VERSION:-$(default_of RUNC_VERSION)}
+        CRUN_VERSION=${CRUN_VERSION:-$(default_of CRUN_VERSION)}
+        CNI_PLUGINS_VERSION=${CNI_PLUGINS_VERSION:-$(default_of CNI_PLUGINS_VERSION)}
+        CRI_TOOLS_VERSION=${CRI_TOOLS_VERSION:-${K8S%.*}.0}
+        GVISOR_RELEASE=${GVISOR_RELEASE:-$(default_of GVISOR_RELEASE)}
+        KATA_VERSION=${KATA_VERSION:-$(default_of KATA_VERSION)}
+        ;;
+    *) die "COMPONENTS must be latest or script, not ${COMPONENTS}" ;;
+esac
 for v in CONTAINERD_VERSION RUNC_VERSION CRUN_VERSION CNI_PLUGINS_VERSION GVISOR_RELEASE KATA_VERSION; do
-    [[ -n "${!v}" ]] || die "could not read the script's default for $v"
+    [[ -n "${!v}" ]] || die "could not resolve $v (COMPONENTS=${COMPONENTS})"
 done
 log "   containerd $CONTAINERD_VERSION runc $RUNC_VERSION crun $CRUN_VERSION cni $CNI_PLUGINS_VERSION cri-tools $CRI_TOOLS_VERSION gvisor $GVISOR_RELEASE kata $KATA_VERSION"
 
@@ -124,10 +178,17 @@ r="github.com/opencontainers/runc/releases/download/v${RUNC_VERSION}/runc"
 add "$r.${ARCH}" "$r.sha256sum" sha256sum-list "runc.${ARCH}"
 add "github.com/containers/crun/releases/download/${CRUN_VERSION}/crun-${CRUN_VERSION}-linux-${ARCH}"
 case "$ARCH" in amd64) GA=x86_64 ;; arm64) GA=aarch64 ;; esac
-for f in runsc containerd-shim-runsc-v1; do
-    p="storage.googleapis.com/gvisor/releases/release/${GVISOR_RELEASE}/${GA}/${f}"
-    add "$p" "$p.sha512" sha512
-done
+# Two layouts, the same choice the installer makes: from 20260831.0 one
+# tarball (runsc, the shim and the gvisor-bin/ sidecars runsc needs), before
+# that each binary on its own.
+g="storage.googleapis.com/gvisor/releases/release/${GVISOR_RELEASE}/${GA}"
+if curl -fsI "https://$g/gvisor.tar.zstd.sha512" >/dev/null; then
+    add "$g/gvisor.tar.zstd" "$g/gvisor.tar.zstd.sha512" sha512
+else
+    for f in runsc containerd-shim-runsc-v1; do
+        add "$g/$f" "$g/$f.sha512" sha512
+    done
+fi
 for t in "kata-static-${KATA_VERSION}-${ARCH}.tar.zst" "kata-go-static-${KATA_VERSION}-${ARCH}.tar.zst"; do
     add "github.com/kata-containers/kata-containers/releases/download/${KATA_VERSION}/${t}"
 done
