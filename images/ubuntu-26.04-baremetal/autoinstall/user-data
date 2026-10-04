@@ -89,6 +89,13 @@ autoinstall:
       cat > /target/etc/dracut.conf.d/99-baremetal.conf <<'EOF'
       hostonly="no"
       add_drivers+=" hid_generic usbhid mgag200 ast i2c_algo_bit "
+      # No network in the initramfs: the root is on a local disk. With
+      # hostonly="no" dracut pulls in systemd-networkd, whose default
+      # network (DHCP on every link) is left in /run and keeps applying in
+      # the booted system - every NIC the config drive does not mention
+      # asked for DHCP and took SLAAC addresses and routes (server01,
+      # 2026-10-04). The NIC drivers then load in the root filesystem.
+      omit_dracutmodules+=" network network-manager systemd-networkd connman network-legacy net-lib iscsi nvmf qemu-net dyn-netconf "
       EOF
     - |
       if [ -f /target/etc/initramfs-tools/initramfs.conf ]; then

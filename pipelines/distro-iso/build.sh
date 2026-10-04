@@ -600,6 +600,12 @@ nic_rx_ring_installed() {
             "$r/usr/local/sbin/nic-rx-ring" "$r/etc/udev/rules.d/70-nic-rx-ring.rules" 2>/dev/null || return 1
     fi
 }
+no_initrd_network() {
+    local hit
+    [[ -n "$1" ]] || return 1
+    hit=$(grep -oE "(usr/lib/systemd/systemd-networkd|usr/sbin/NetworkManager|usr/libexec/nm-initrd-generator|usr/sbin/dhclient|dracut-default\.network)( |\$)" <<<"$1" | sort -u | tr -d ' ' | tr '\n' ' ')
+    [[ -z "$hit" ]] || { log "        in the initramfs: $hit"; return 1; }
+}
 is_a_template() {
     local r=$1
     [[ ! -s "$r/etc/machine-id" ]] || return 1
@@ -768,8 +774,14 @@ verify_image() {
     chk "NIC receive rings raised at boot (nic-rx-ring + udev rule, in the initramfs)" \
         "drivers keep their own ring sizes - bnx2x 214 per queue, 0.2-0.7% of packets dropped" \
         nic_rx_ring_installed "$mnt" "$list"
+    # 13 No network stack in the initramfs. dracut's systemd-networkd brings
+    #    every link up with DHCP and leaves that config in /run, where the
+    #    booted system keeps applying it to NICs the deployment never named.
+    chk "no network stack in the initramfs (unnamed NICs stay down)" \
+        "every NIC the config drive does not mention asks for DHCP and takes routes" \
+        no_initrd_network "$list"
 
-    # 13+ The layer, if there is one: its own checks, its own verdict lines,
+    # 14+ The layer, if there is one: its own checks, its own verdict lines,
     #     and the manifest fields it read back from the image.
     local layer_failed=0
     LAYER_MANIFEST='{}'
@@ -791,8 +803,8 @@ verify_image() {
     umount "$mnt" || warn "could not unmount $mnt - the work directory will not clean up"
 
     ((_checks_failed == 0 && layer_failed == 0)) || \
-        die "verify failed ($_checks_failed of 13 base checks, $layer_failed layer checks); the image is not usable"
-    log "   13/13 passed${LAYER_KUBERNETES:+, layer checks passed}"
+        die "verify failed ($_checks_failed of 14 base checks, $layer_failed layer checks); the image is not usable"
+    log "   14/14 passed${LAYER_KUBERNETES:+, layer checks passed}"
 }
 
 # initrd_list <rootfs> <path-inside> — the file list of an initramfs.

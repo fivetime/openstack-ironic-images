@@ -64,7 +64,7 @@ the day it ran.
 
 ## The console contract (what verify enforces)
 
-Thirteen checks, each printing its own verdict - a checker that only speaks
+Fourteen checks, each printing its own verdict - a checker that only speaks
 when it is unhappy cannot be told apart from one that did not run. A
 failure is a build failure: no image, no manifest, no upload.
 
@@ -81,6 +81,7 @@ failure is a build failure: no image, no manifest, no upload.
     ok   growpart tool present (root grows to the disk on first boot)
     ok   no hypervisor guest agent (qemu-ga, vmtoolsd, hv_kvp_daemon, spice-vdagent)
     ok   NIC receive rings raised at boot (nic-rx-ring + udev rule, in the initramfs)
+    ok   no network stack in the initramfs (unnamed NICs stay down)
 
 Seven of them are the way they are because an earlier version could not do
 its job, and every one of those was found by watching what the stage said
@@ -173,11 +174,31 @@ the ring at 4078 they dropped none over 59 hours and 1.6 G packets
 4096 for memory, halves on refusal, and leaves alone what reports no ring
 (USB NICs, some virtual ones).
 
-Why the initramfs: networkd configures a link only after udev is done with
-it, RUN programs included. With the rule only in the root filesystem it ran
-after the initramfs had already brought the links up, and each bnx2x port
-reloaded mid-boot; from the initramfs, every ring was set before the first
-link-up and each port initialised once (server01, 2026-10-04).
+When: networkd configures a link only after udev is done with it, RUN
+programs included, so the ring is set before the first link-up wherever the
+NIC first appears. On server01 (2026-10-04) the images still had a network
+stack in the initramfs, which brought the links up there; the rule, in the
+root filesystem only, then ran too late and each bnx2x port reloaded
+mid-boot. The rule is in the initramfs as well for that reason, but the
+real fix was the next section: with no network in the initramfs the NIC
+drivers load in the root filesystem, every ring was set before networkd
+started, and each port initialised once.
+
+## No network in the initramfs
+
+`hostonly="no"` makes dracut take every module, systemd-networkd among
+them. Its cmdline hook, finding no `ip=`, copies a default network - DHCP
+on every link that is not a loopback - into `/run/systemd/network`, and
+`/run` survives the switch to the root filesystem. The booted system's
+networkd kept applying it: on server01 every NIC the config drive did not
+name asked for DHCP, eno6 took a SLAAC address, and the iLO's USB NIC
+took `16.1.15.2`. A second cable into some other VLAN would have brought a
+second default route. The root is on a local disk and nothing here boots
+from the network (Ironic's storage interface is `noop` on every node), so
+both answer files omit the network modules (`omit_dracutmodules`), and
+check 13 fails an image whose initramfs carries networkd, NetworkManager,
+dhclient or dracut's default network. Without them, only the interfaces
+the config drive describes are configured; the rest stay down.
 
 ## Serial port per vendor
 
