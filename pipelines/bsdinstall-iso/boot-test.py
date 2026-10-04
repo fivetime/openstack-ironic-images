@@ -17,12 +17,14 @@ What it stands in for:
   (802.3ad, layer3+4, lacp fast) and VLANs on it - one with static IPv4
   and IPv6 and the default route, one DHCPv6-stateful. No user_data, so
   nuageinit creates its default user with its built-in password;
-- a third NIC the network data does not name (ifconfig_DEFAULT: DHCP) for
-  the test's own SSH, forwarded from the host;
+- a third NIC the network data gives an ipv4_dhcp network, for the
+  test's own SSH, forwarded from the host;
 - a fifth NIC the network data names with an ipv6_slaac network only, on
   QEMU's user network, whose router answers router solicitations: the one
   place here where IPv6 from dhcpcd can be asserted as an address rather
-  than as configuration.
+  than as configuration;
+- a sixth NIC the network data does not name, with a link: it has to stay
+  down, as every NIC the network data leaves out does.
 There is no LACP partner, so lagg0 has no active port: the checks are on
 configuration, not traffic.
 """
@@ -44,7 +46,7 @@ con_sock = os.path.join(sockdir, "console.sock")
 key = os.path.join(work, "id_ed25519")
 HOST = "bmtest-" + secrets.token_hex(3)
 MAC1, MAC2, MAC3 = "20:67:7c:00:be:01", "20:67:7c:00:be:02", "52:54:00:00:be:03"
-MAC5 = "52:54:00:00:be:05"
+MAC4, MAC5, MAC6 = "52:54:00:00:be:04", "52:54:00:00:be:05", "52:54:00:00:be:06"
 
 subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "boottest", "-f", key], check=True)
 pub = open(key + ".pub").read().strip()
@@ -63,6 +65,8 @@ json.dump({
          "vlan_mac_address": MAC1, "mtu": 1500},
         {"id": "tenant", "type": "vlan", "vlan_link": "bond0", "vlan_id": 12,
          "vlan_mac_address": MAC1, "mtu": 1500},
+        {"id": "nic3", "type": "phy", "ethernet_mac_address": MAC3, "mtu": 1500},
+        {"id": "nic4", "type": "phy", "ethernet_mac_address": MAC4, "mtu": 1500},
         {"id": "nic5", "type": "phy", "ethernet_mac_address": MAC5, "mtu": 1500}],
     "networks": [
         {"id": "k8s-ctl-v4", "type": "ipv4", "link": "k8s-ctl", "ip_address": "10.32.0.27",
@@ -72,7 +76,9 @@ json.dump({
          "netmask": "ffff:ffff:ffff:ffff::", "routes": []},
         {"id": "tenant-v6", "type": "ipv6_dhcpv6-stateful", "link": "tenant",
          "ip_address": "2001:db8:12::27", "netmask": "ffff:ffff:ffff:ffff::", "routes": []},
-        {"id": "slaac-v6", "type": "ipv6_slaac", "link": "nic5", "network_id": "slaac"}],
+        {"id": "slaac-v6", "type": "ipv6_slaac", "link": "nic5", "network_id": "slaac"},
+        {"id": "ssh-v4", "type": "ipv4_dhcp", "link": "nic3", "network_id": "ssh"},
+        {"id": "idle-v4", "type": "ipv4_dhcp", "link": "nic4", "network_id": "idle"}],
     "services": [{"type": "dns", "address": "192.0.2.53"}]},
     open(os.path.join(cd, "network_data.json"), "w"))
 subprocess.run(["xorrisofs", "-quiet", "-R", "-J", "-V", "config-2", "-o",
@@ -117,13 +123,16 @@ qemu_cmd = [
     "-device", f"virtio-net-pci,netdev=n3,mac={MAC3}",
     # A fourth NIC the network data does not name either, on a hub with
     # nothing else: a link, and no DHCP server - a server's cabled-but-idle
-    # or briefly-up port. Left to ifconfig_DEFAULT, it asks DHCP and gets no
-    # lease; dhcpcd's IPv4LL gave such a NIC a 169.254/16 address and the
-    # default route (Server09, 2026-09-26).
-    "-netdev", "hubport,id=n4,hubid=4", "-device", "virtio-net-pci,netdev=n4,mac=52:54:00:00:be:04",
+    # or briefly-up port. The network data gives it ipv4_dhcp: it asks and
+    # gets no lease; dhcpcd's IPv4LL gave such a NIC a 169.254/16 address
+    # and the default route (Server09, 2026-09-26).
+    "-netdev", "hubport,id=n4,hubid=4", "-device", f"virtio-net-pci,netdev=n4,mac={MAC4}",
     # vtnet4: the network data's ipv6_slaac link. QEMU's user network sends
     # router advertisements and answers solicitations, as a VLAN's gateway does.
     "-netdev", "user,id=n5,restrict=on", "-device", f"virtio-net-pci,netdev=n5,mac={MAC5}",
+    # vtnet5: a NIC with a link that the network data does not name. It stays
+    # down; ifconfig_DEFAULT="DHCP" asked DHCP on such NICs until 2026-10-04.
+    "-netdev", "hubport,id=n6,hubid=6", "-device", f"virtio-net-pci,netdev=n6,mac={MAC6}",
 ]
 qemu = subprocess.Popen(qemu_cmd, stdout=open(os.path.join(work, "qemu.log"), "w"), stderr=subprocess.STDOUT)
 
@@ -248,7 +257,7 @@ try:
           and "vlan: 11" in out, " | ".join(l.strip() for l in out.splitlines() if "inet" in l or "vlan:" in l))
     # dhcpcd is the only DHCP client: IPv6 on the interfaces the renderer
     # lists (the DHCPv6 network's VLAN and the SLAAC NIC), IPv4 on the
-    # interfaces rc configures by DHCP (the unnamed NICs, ifconfig_DEFAULT).
+    # interfaces rc configures by DHCP (vtnet2 and vtnet3, ipv4_dhcp).
     # This check is configuration only: lagg0 has no LACP partner, so VLAN
     # 12 carries nothing. It once asserted "noipv4\nnoipv6\ninterface
     # lagg0.12\nipv6" - a configuration under which dhcpcd starts no network
@@ -261,7 +270,7 @@ try:
     globals_ = rendered.split("\ninterface ", 1)[0].splitlines()
     check("dhcpcd scoped by allowinterfaces, IPv6 not turned off globally (VLAN 12 and vtnet4 listed)",
           "vlan: 12" in out and 'dhcpcd_ipv6_interfaces="lagg0.12 vtnet4"' in out
-          and {"lagg0.12", "vtnet4", "vtnet2"} <= set(allow)
+          and {"lagg0.12", "vtnet4", "vtnet2"} <= set(allow) and "vtnet5" not in allow
           and "noipv4" in globals_ and "noipv6" not in globals_,
           " | ".join(l.strip() for l in out.splitlines() if l.strip())[:300])
     rc, out = as_root("ps -axo command | grep '[d]hcpcd: \\['")
@@ -274,12 +283,12 @@ try:
           re.search(r"^\s+inet6 (?!fe80)\S+ prefixlen 64", out, re.M) is not None,
           " | ".join(l.strip() for l in out.splitlines() if "inet6" in l or "default" in l))
     rc, out = as_root("ifconfig vtnet2 inet6")
-    check("no IPv6 address on the unnamed NIC, which hears the same advertisements (vtnet2)",
+    check("no IPv6 address on the IPv4-only NIC, which hears the same advertisements (vtnet2)",
           re.search(r"^\s+inet6 (?!fe80)", out, re.M) is None,
           " | ".join(l.strip() for l in out.splitlines() if "inet6" in l))
     rc, out = as_root("service dhclient status vtnet2; pgrep -x dhclient >/dev/null && echo DHCLIENT-RUNNING; "
                       "ifconfig vtnet2 inet; v=$(pkg query %v dhcpcd); echo dhcpcd $v $(pkg version -t $v 10.5.2)")
-    check("dhcpcd, not dhclient, holds IPv4 on the unnamed NIC (rc.d/dhclient redirected)",
+    check("dhcpcd, not dhclient, holds IPv4 on the ipv4_dhcp NIC (vtnet2; rc.d/dhclient redirected)",
           "DHCPv4 on vtnet2: dhcpcd is running" in out and "DHCLIENT-RUNNING" not in out and "inet " in out,
           " | ".join(l.strip() for l in out.splitlines() if "DHCP" in l or "inet " in l))
     check("dhcpcd is 10.5.2 or later", re.search(r"^dhcpcd \S+ [=>]$", out, re.M) is not None,
@@ -288,8 +297,13 @@ try:
     check("IPv4 default route from the network data", out.strip() == "10.32.0.1", out)
     rc, out = as_root("ifconfig -a | grep 'inet 169.254' || echo none")
     check("no IPv4LL address on a DHCP interface without a lease (vtnet3, noipv4ll)", out.strip() == "none", out)
-    rc, out = as_root("cat /etc/rc.conf.d/network; grep -c ifconfig_vtnet2 /etc/rc.conf.d/network || true")
-    check("the unnamed NIC left to ifconfig_DEFAULT", out.strip().endswith("0"))
+    rc, out = as_root("grep -c '^ifconfig_vtnet5' /etc/rc.conf.d/network; grep -cx 'ifconfig_DEFAULT=\"\"' "
+                      "/etc/rc.conf.d/network; ifconfig vtnet5")
+    lines = out.splitlines()
+    check("a NIC the network data does not name stays down, no address (vtnet5, ifconfig_DEFAULT empty)",
+          lines[:2] == ["0", "1"] and len(lines) > 2 and "<UP" not in lines[2] and ",UP," not in lines[2]
+          and not re.search(r"^\s+inet6? (?!fe80)", out, re.M),
+          " | ".join(l.strip() for l in lines[:4]))
 
     # ---- accounts, growth, identity
     rc, out = as_root("pw usershow freebsd | cut -d: -f2; pw usershow root | cut -d: -f2")

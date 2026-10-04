@@ -257,6 +257,17 @@ for _, ifname in ipairs(order) do
 	end
 end
 
+-- Interfaces the network data does not name stay down: rc.conf's
+-- ifconfig_DEFAULT="DHCP" is the images' answer to having no network data
+-- at all, not to a NIC left out of it. Left on, every such NIC asked for
+-- DHCP - a spare port cabled into some VLAN would bring its own address
+-- and default route, and the iLO's USB NIC took 16.1.15.2 (Server09,
+-- 2026-10-04). Same rule as the Linux images. Only when something was
+-- rendered: network data with no links is no network data.
+if #order > 0 then
+	network[#network + 1] = 'ifconfig_DEFAULT=""'
+end
+
 local function write(name, lines)
 	local f = assert(io.open("/etc/rc.conf.d/" .. name, "w"))
 	for _, l in ipairs(lines) do

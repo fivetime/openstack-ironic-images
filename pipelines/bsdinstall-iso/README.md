@@ -137,8 +137,13 @@ original:
 | `ipv6_slaac` / `ipv6_dhcpv6-stateless` / `ipv6_dhcpv6-stateful` | the interface in `dhcpcd_ipv6_interfaces` (`/etc/rc.conf.d/dhcpcd`, always written, empty too): dhcpcd runs IPv6 there and on no other interface (`slaac hwaddr`: Neutron's port security passes only EUI-64 addresses) |
 | routes | first `0.0.0.0/0` -> `defaultrouter`, first `::/0` -> `ipv6_defaultrouter`, others static routes |
 
-Interfaces the network data does not name get `ifconfig_DEFAULT="DHCP"` (IPv4 by dhcpcd, as for
-`ipv4_dhcp`).
+Interfaces the network data does not name stay down: whenever it renders an interface the renderer
+also writes `ifconfig_DEFAULT=""`, and dhcpcd's `allowinterfaces` leaves them out. `rc.conf`'s
+`ifconfig_DEFAULT="DHCP"` remains for a config drive with no network data (or none with links), so
+such a machine still gets an address. Until 2026-10-04 unnamed NICs fell to that DHCP: on Server09 every
+spare port asked for a lease, and the iLO's USB NIC (ue0) took `16.1.15.2`; a spare port cabled into
+another VLAN would have brought its own address and default route. Same rule as the Linux images, whose
+initramfs no longer brings links up either.
 nuageinit's built-in password is replaced with `*` by the first-boot
 script `nuageinit_default_password` before sshd starts (as on the cloud
 images). SSH: FreeBSD's default sshd, so `sysadmin` can log in with the
@@ -193,8 +198,9 @@ Replies left through a NIC with no carrier; the switch saw nothing on Et34 and t
 unreachable. dhclient never did IPv4LL, so the UFS images accepted on Server09 before the dhcpcd
 change did not show it. Confirmed on the machine: `noipv4ll`, dhcpcd restarted (it withdrew its
 default route), the static one added - reachable, from outside too. The boot test now has a fourth
-NIC on a QEMU hub with nothing else on it (a link, no DHCP server) left to `ifconfig_DEFAULT`, and
-checks that no interface has a 169.254 address and the default route is the network data's.
+NIC on a QEMU hub with nothing else on it (a link, no DHCP server), given `ipv4_dhcp` by the network
+data since unnamed NICs stay down, and checks that no interface has a 169.254 address and the default
+route is the network data's.
 dhcpcd-rc also waits for the manager's control socket before `dhcpcd -n`: asked the moment the
 manager started, one command failed (`dhcpcd_control_read: Invalid argument`) and that dhcpcd went on
 to start as another daemon.
