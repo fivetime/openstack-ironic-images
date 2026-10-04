@@ -159,9 +159,18 @@ files that are byte-identical in `openstack-cloud-images` (pipelines/freebsd-clo
 - `/usr/local/etc/rc.conf.d/dhcpcd`: `dhcpcd_enable=YES`, `dhcpcd_flags="-b -f /var/run/dhcpcd.conf"`,
   `dhcpcd_ipv6_interfaces` (default `ALL`; the renderer's list in `/etc/rc.conf.d/dhcpcd` is read
   first and wins), and the manager's configuration written before it starts.
-- `dhcpcd-rc`: the configuration is `/usr/local/etc/dhcpcd.conf`, then a global `noipv4` (and, unless
-  ALL, `noipv6` plus `interface <if>` / `ipv6` for each listed interface), then `interface <if>` /
-  `ipv4` for each interface rc asked DHCP for (kept in `/var/run/dhcpcd.ipv4`, emptied at boot).
+- `dhcpcd-rc`: the configuration is `/usr/local/etc/dhcpcd.conf`, then a global `noipv4` and
+  `interface <if>` / `ipv4` for each interface rc asked DHCP for (kept in `/var/run/dhcpcd.ipv4`,
+  emptied at boot). With ALL that is all; with a list, `allowinterfaces` names the listed interfaces
+  and rc's - dhcpcd ignores every other one, now or later - and each allowed interface not on the
+  list gets `noipv6` in its block. IPv6 is never turned off globally: dhcpcd's privilege-separated
+  network proxy, the only path for router solicitations, router advertisements and DHCPv6, starts
+  only when the global options keep IPv4 or IPv6 (dhcpcd 10.5.2 `src/privsep-inet.c`,
+  `ps_inet_canstart`). Until 2026-10-04 the list was written as a global `noipv6` with `ipv6` in each
+  listed interface's block: no proxy, "soliciting an IPv6 router" followed by `ps_root_recvmsg: Bad
+  file descriptor`, no solicitation on the wire, the RAs the kernel received ignored - no IPv6 on any
+  listed interface (Server09; the switch answered the same port's solicitations from the deploy
+  ramdisk in 0.3 s). Nothing to run at all keeps the global `noipv4`/`noipv6`.
   `ipv4-start` records the interface, rewrites the configuration and runs `dhcpcd -n <if>` (reload
   and rebind; the interface's IPv6 restarts too) - nothing when it is recorded already and the manager
   runs, since netif and devd both ask. `ipv4-stop` removes it and runs `dhcpcd -4 -k <if>` (the IPv4
@@ -205,17 +214,22 @@ jail's epair, the connected route of an address added by hand) would lose everyt
 interface as dhclient-script did. On bare metal the network data's link MTU is rendered anyway (`up
 mtu N`); the hook matters for an interface configured by DHCP.
 
-The boot test checks the bare-metal side of this (the renderer's list, IPv6 on VLAN 12 only, IPv4 on the
-unnamed NIC by dhcpcd with no dhclient running, the version). Deleting the address and
+The boot test checks the bare-metal side of this: the renderer's list and `allowinterfaces`, no global
+`noipv6`, dhcpcd's network proxy running, a SLAAC address on the NIC the network data gives an
+`ipv6_slaac` network (QEMU's user network sends and answers router advertisements), none on the unnamed
+NIC that hears the same advertisements, IPv4 on the unnamed NIC by dhcpcd with no dhclient running, the
+version. The VLAN 12 check alone is configuration, and it once asserted exactly the configuration that
+gets no IPv6 - and passed. Deleting the address and
 `service netif restart` are checked by openstack-cloud-images' boot test, which reaches the guest
 through the guest agent; here root goes over SSH on the very NIC those would take down.
 
 The boot test gives the machine this network data - two phy links, a bond
 (802.3ad, layer3+4, lacp fast), VLAN 11 with static IPv4/IPv6 and the
 default route, VLAN 12 DHCPv6-stateful - plus a third NIC it does not name
-for the test's own SSH. There is no LACP partner in QEMU, so the checks are
-on configuration: lagg0 with both ports and `LACP_FAST_TIMO`, the VLAN
-addresses, the default route, dhcpcd's IPv6 on lagg0.12 only and IPv4 on the unnamed NIC. Traffic
+for the test's own SSH, and a fifth with an `ipv6_slaac` network only. There is no LACP partner in
+QEMU, so the bond's checks are on configuration: lagg0 with both ports and `LACP_FAST_TIMO`, the VLAN
+addresses, the default route, dhcpcd's IPv6 scoped to lagg0.12 and the fifth NIC, IPv4 on the unnamed
+NIC. The fifth NIC is where IPv6 from dhcpcd is an address and not a configuration. Traffic
 through the bond is for the real machine (`tests/smoke-baremetal.md`).
 
 ## ZFS root (the freebsd-zfs-* images)

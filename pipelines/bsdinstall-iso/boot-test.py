@@ -18,7 +18,11 @@ What it stands in for:
   and IPv6 and the default route, one DHCPv6-stateful. No user_data, so
   nuageinit creates its default user with its built-in password;
 - a third NIC the network data does not name (ifconfig_DEFAULT: DHCP) for
-  the test's own SSH, forwarded from the host.
+  the test's own SSH, forwarded from the host;
+- a fifth NIC the network data names with an ipv6_slaac network only, on
+  QEMU's user network, whose router answers router solicitations: the one
+  place here where IPv6 from dhcpcd can be asserted as an address rather
+  than as configuration.
 There is no LACP partner, so lagg0 has no active port: the checks are on
 configuration, not traffic.
 """
@@ -40,6 +44,7 @@ con_sock = os.path.join(sockdir, "console.sock")
 key = os.path.join(work, "id_ed25519")
 HOST = "bmtest-" + secrets.token_hex(3)
 MAC1, MAC2, MAC3 = "20:67:7c:00:be:01", "20:67:7c:00:be:02", "52:54:00:00:be:03"
+MAC5 = "52:54:00:00:be:05"
 
 subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "boottest", "-f", key], check=True)
 pub = open(key + ".pub").read().strip()
@@ -57,7 +62,8 @@ json.dump({
         {"id": "k8s-ctl", "type": "vlan", "vlan_link": "bond0", "vlan_id": 11,
          "vlan_mac_address": MAC1, "mtu": 1500},
         {"id": "tenant", "type": "vlan", "vlan_link": "bond0", "vlan_id": 12,
-         "vlan_mac_address": MAC1, "mtu": 1500}],
+         "vlan_mac_address": MAC1, "mtu": 1500},
+        {"id": "nic5", "type": "phy", "ethernet_mac_address": MAC5, "mtu": 1500}],
     "networks": [
         {"id": "k8s-ctl-v4", "type": "ipv4", "link": "k8s-ctl", "ip_address": "10.32.0.27",
          "netmask": "255.255.240.0",
@@ -65,7 +71,8 @@ json.dump({
         {"id": "k8s-ctl-v6", "type": "ipv6", "link": "k8s-ctl", "ip_address": "fc00:1:1::27",
          "netmask": "ffff:ffff:ffff:ffff::", "routes": []},
         {"id": "tenant-v6", "type": "ipv6_dhcpv6-stateful", "link": "tenant",
-         "ip_address": "2001:db8:12::27", "netmask": "ffff:ffff:ffff:ffff::", "routes": []}],
+         "ip_address": "2001:db8:12::27", "netmask": "ffff:ffff:ffff:ffff::", "routes": []},
+        {"id": "slaac-v6", "type": "ipv6_slaac", "link": "nic5", "network_id": "slaac"}],
     "services": [{"type": "dns", "address": "192.0.2.53"}]},
     open(os.path.join(cd, "network_data.json"), "w"))
 subprocess.run(["xorrisofs", "-quiet", "-R", "-J", "-V", "config-2", "-o",
@@ -114,6 +121,9 @@ qemu_cmd = [
     # lease; dhcpcd's IPv4LL gave such a NIC a 169.254/16 address and the
     # default route (Server09, 2026-09-26).
     "-netdev", "hubport,id=n4,hubid=4", "-device", "virtio-net-pci,netdev=n4,mac=52:54:00:00:be:04",
+    # vtnet4: the network data's ipv6_slaac link. QEMU's user network sends
+    # router advertisements and answers solicitations, as a VLAN's gateway does.
+    "-netdev", "user,id=n5,restrict=on", "-device", f"virtio-net-pci,netdev=n5,mac={MAC5}",
 ]
 qemu = subprocess.Popen(qemu_cmd, stdout=open(os.path.join(work, "qemu.log"), "w"), stderr=subprocess.STDOUT)
 
@@ -237,14 +247,36 @@ try:
           "inet 10.32.0.27 netmask 0xfffff000" in out and "inet6 fc00:1:1::27 prefixlen 64" in out
           and "vlan: 11" in out, " | ".join(l.strip() for l in out.splitlines() if "inet" in l or "vlan:" in l))
     # dhcpcd is the only DHCP client: IPv6 on the interfaces the renderer
-    # lists (the DHCPv6 network's VLAN only), IPv4 on the interfaces rc
-    # configures by DHCP (here the unnamed NIC, ifconfig_DEFAULT).
+    # lists (the DHCPv6 network's VLAN and the SLAAC NIC), IPv4 on the
+    # interfaces rc configures by DHCP (the unnamed NICs, ifconfig_DEFAULT).
+    # This check is configuration only: lagg0 has no LACP partner, so VLAN
+    # 12 carries nothing. It once asserted "noipv4\nnoipv6\ninterface
+    # lagg0.12\nipv6" - a configuration under which dhcpcd starts no network
+    # proxy and gets no IPv6 anywhere (Server09, 2026-10-04) - and passed.
+    # The outcome is asserted on vtnet4 below.
     rc, out = as_root("ifconfig lagg0.12 | grep 'vlan: 12'; cat /etc/rc.conf.d/dhcpcd; "
                       "sed -n '/^# dhcpcd-rc/,$p' /var/run/dhcpcd.conf")
-    check("VLAN 12 (DHCPv6-stateful): dhcpcd runs IPv6 there and nowhere else",
-          "vlan: 12" in out and 'dhcpcd_ipv6_interfaces="lagg0.12"' in out
-          and "noipv4\nnoipv6\ninterface lagg0.12\nipv6" in out,
-          " | ".join(l.strip() for l in out.splitlines() if l.strip()))
+    allow = next((l.split()[1:] for l in out.splitlines() if l.startswith("allowinterfaces ")), [])
+    rendered = out[out.find("# dhcpcd-rc"):] if "# dhcpcd-rc" in out else ""
+    globals_ = rendered.split("\ninterface ", 1)[0].splitlines()
+    check("dhcpcd scoped by allowinterfaces, IPv6 not turned off globally (VLAN 12 and vtnet4 listed)",
+          "vlan: 12" in out and 'dhcpcd_ipv6_interfaces="lagg0.12 vtnet4"' in out
+          and {"lagg0.12", "vtnet4", "vtnet2"} <= set(allow)
+          and "noipv4" in globals_ and "noipv6" not in globals_,
+          " | ".join(l.strip() for l in out.splitlines() if l.strip())[:300])
+    rc, out = as_root("ps -axo command | grep '[d]hcpcd: \\['")
+    check("dhcpcd's network proxy runs (the only path for RS, RA and DHCPv6)",
+          "[network proxy]" in out and re.search(r"\[manager\] .*\[ip6\]", out) is not None,
+          " | ".join(l.strip() for l in out.splitlines()))
+    rc, out = as_root("i=0; while [ $i -lt 30 ]; do ifconfig vtnet4 inet6 | grep -v 'inet6 fe80' | grep -q 'inet6 ' && break; "
+                      "sleep 1; i=$((i + 1)); done; ifconfig vtnet4 inet6; netstat -rn -f inet6 | grep '^default'")
+    check("SLAAC on the ipv6_slaac NIC (vtnet4): an address from the router advertisement",
+          re.search(r"^\s+inet6 (?!fe80)\S+ prefixlen 64", out, re.M) is not None,
+          " | ".join(l.strip() for l in out.splitlines() if "inet6" in l or "default" in l))
+    rc, out = as_root("ifconfig vtnet2 inet6")
+    check("no IPv6 address on the unnamed NIC, which hears the same advertisements (vtnet2)",
+          re.search(r"^\s+inet6 (?!fe80)", out, re.M) is None,
+          " | ".join(l.strip() for l in out.splitlines() if "inet6" in l))
     rc, out = as_root("service dhclient status vtnet2; pgrep -x dhclient >/dev/null && echo DHCLIENT-RUNNING; "
                       "ifconfig vtnet2 inet; v=$(pkg query %v dhcpcd); echo dhcpcd $v $(pkg version -t $v 10.5.2)")
     check("dhcpcd, not dhclient, holds IPv4 on the unnamed NIC (rc.d/dhclient redirected)",

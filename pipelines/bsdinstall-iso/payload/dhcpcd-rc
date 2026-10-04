@@ -33,10 +33,21 @@
 # route on bxe0, no carrier; the machine unreachable). dhclient never did.
 #
 # The manager reads /var/run/dhcpcd.conf: /usr/local/etc/dhcpcd.conf,
-# then IPv4 off and IPv6 off except on dhcpcd_ipv6_interfaces, then IPv4
-# on for each interface rc asked for. dhcpcd.conf must not end inside an
-# "interface" block, or these global lines would land in it. /var/run is
-# emptied at boot: the interfaces rc asked for are this boot's.
+# then IPv4 off globally and on for each interface rc asked for; IPv6 on
+# everywhere (ALL), or only on dhcpcd_ipv6_interfaces. A list never turns
+# IPv6 off globally: dhcpcd's privilege-separated network proxy - the only
+# path for router solicitations, router advertisements and DHCPv6 - starts
+# only when the global options keep IPv4 or IPv6 (privsep-inet.c,
+# ps_inet_canstart), and an "ipv6" inside an interface block does not
+# count. With "noipv4" and "noipv6" global there was no proxy: dhcpcd
+# logged "soliciting an IPv6 router" and "ps_root_recvmsg: Bad file
+# descriptor", sent nothing, and ignored the RAs the kernel received - no
+# IPv6 on any listed interface (Server09, 2026-10-04). So a list becomes
+# allowinterfaces - dhcpcd ignores every other interface, now or later -
+# and "noipv6" inside the block of each allowed interface not on it.
+# dhcpcd.conf must not end inside an "interface" block, or these global
+# lines would land in it. /var/run is emptied at boot: the interfaces rc
+# asked for are this boot's.
 
 PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin
 dhcpcd=/usr/local/sbin/dhcpcd
@@ -53,22 +64,33 @@ load_rc_config dhcpcd
 
 write_conf()
 {
-	local i
+	local i v4 allow
+	v4=$(cat $ipv4 2>/dev/null | tr '\n' ' ')
 	{
 		cat /usr/local/etc/dhcpcd.conf
 		echo
 		echo "# dhcpcd-rc: IPv6 on ${dhcpcd_ipv6_interfaces:-no interface}, IPv4 where rc asks for DHCP"
-		echo noipv4
-		if [ "$dhcpcd_ipv6_interfaces" != ALL ]; then
-			echo noipv6
-			for i in $dhcpcd_ipv6_interfaces; do
-				printf 'interface %s\nipv6\n' "$i"
-			done
-		fi
-		if [ -f $ipv4 ]; then
-			while read -r i; do
+		if [ "$dhcpcd_ipv6_interfaces" = ALL ]; then
+			echo noipv4
+			for i in $v4; do
 				printf 'interface %s\nipv4\n' "$i"
-			done <$ipv4
+			done
+		else
+			# shellcheck disable=SC2086 # split on purpose: both are lists
+			allow=$(printf '%s\n' $dhcpcd_ipv6_interfaces $v4 | sort -u | tr '\n' ' ')
+			if [ -z "${allow% }" ]; then
+				# Nothing to run: no proxy needed either.
+				echo noipv4
+				echo noipv6
+			else
+				echo "allowinterfaces ${allow% }"
+				echo noipv4
+				for i in $allow; do
+					echo "interface $i"
+					case " $v4 " in *" $i "*) echo ipv4 ;; esac
+					case " $dhcpcd_ipv6_interfaces " in *" $i "*) ;; *) echo noipv6 ;; esac
+				done
+			fi
 		fi
 	} >$conf.new && mv -f $conf.new $conf
 }
