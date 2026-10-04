@@ -1,0 +1,67 @@
+#!/bin/sh
+# Raise a NIC's receive ring to its hardware maximum, capped at 4096.
+#
+# Run by udev (70-nic-rx-ring.rules) for every network interface that has
+# a device behind it, whatever it is called and whether or not it is
+# cabled or configured; by hand: nic-rx-ring <ifindex>.
+#
+# Why: a driver given no ring size picks its own, and some pick badly.
+# bnx2x (HPE 533FLR-T and friends) splits a fixed 4078-entry budget across
+# its queues, and the kernel gives a 36-core DL360 18 of them: 214 entries
+# per queue. A burst of a few hundred packets onto one queue overflows it,
+# and the NIC drops them ("fifo" receive errors, 0.2-0.7% of all packets on
+# kvm-worker4/5). Set explicitly, the size is per queue and no longer
+# divided; at 4078 the same hosts dropped nothing over 59 hours, 1.6 G
+# packets, peaks of 34 kpps per port (2026-10-01..04).
+#
+# The cap bounds memory on NICs with many queues and large maxima
+# (entries x queues x ~2 KB). A driver that cannot report or change its
+# ring is left alone; one that refuses the size gets half of it, and so on
+# down to what it already had. Always exits 0: udev only logs failures.
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+cap=4096
+
+log() { logger -t nic-rx-ring -- "$*" 2>/dev/null || echo "nic-rx-ring: $*" >&2; }
+
+# udev passes the ifindex, not the name: the name can change (a .link
+# file, netplan's set-name) while the index stays.
+name=
+for d in /sys/class/net/*; do
+    if [ "$(cat "$d/ifindex" 2>/dev/null)" = "$1" ]; then
+        name=${d##*/}
+        break
+    fi
+done
+[ -n "$name" ] || { log "ifindex $1: no such interface"; exit 0; }
+drv=$(basename "$(readlink "/sys/class/net/$name/device/driver" 2>/dev/null)" 2>/dev/null)
+
+out=$(ethtool -g "$name" 2>/dev/null) || { log "$name ($drv): ring size not reported, left alone"; exit 0; }
+rings=$(printf '%s\n' "$out" | awk '
+    /^Pre-set maximums/          { s = 1 }
+    /^Current hardware settings/ { s = 2 }
+    /^RX:/ { if (s == 1 && max == "") max = $2; if (s == 2 && cur == "") cur = $2 }
+    END { print max, cur }')
+max=${rings% *}
+cur=${rings#* }
+case "$max.$cur" in
+    *[!0-9.]*|.*|*.) log "$name ($drv): no RX ring numbers (max '$max', current '$cur'), left alone"; exit 0 ;;
+esac
+
+want=$max
+[ "$want" -gt "$cap" ] && want=$cap
+if [ "$cur" -ge "$want" ]; then
+    log "$name ($drv): RX ring $cur already >= $want (max $max), unchanged"
+    exit 0
+fi
+
+try=$want
+while [ "$try" -gt "$cur" ]; do
+    if ethtool -G "$name" rx "$try" 2>/dev/null; then
+        log "$name ($drv): RX ring $cur -> $try (max $max)"
+        exit 0
+    fi
+    try=$((try / 2))
+done
+log "$name ($drv): could not raise RX ring above $cur (max $max)"
+exit 0

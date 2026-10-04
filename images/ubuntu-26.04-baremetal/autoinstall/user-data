@@ -108,6 +108,19 @@ autoinstall:
     #     SATA CD-ROM works (2026-09-09).
     - |
       printf 'sr_mod\ncdrom\nisofs\n' >> /target/etc/initramfs-tools/modules
+    # 2c) Receive rings. A driver left to itself can pick a ring far too
+    #     small for a server: bnx2x on a 36-core DL360 gives each queue 214
+    #     entries and drops 0.2-0.7% of all packets in bursts. A udev rule
+    #     raises every NIC's ring to its maximum, capped at 4096
+    #     (pipelines/distro-iso/payload/). It goes into the initramfs too,
+    #     so the ring is set before any link is up - which is why this
+    #     comes before update-initramfs. Checked by the verify stage.
+    - |
+      mkdir -p /target/usr/local/sbin /target/etc/udev/rules.d
+      echo '@@B64:nic-rx-ring@@' | base64 -d > /target/usr/local/sbin/nic-rx-ring
+      chmod 0755 /target/usr/local/sbin/nic-rx-ring
+      echo '@@B64:70-nic-rx-ring.rules@@' | base64 -d > /target/etc/udev/rules.d/70-nic-rx-ring.rules
+      echo '@@B64:90-nic-rx-ring.conf@@' | base64 -d > /target/etc/dracut.conf.d/90-nic-rx-ring.conf
     - curtin in-target --target=/target -- update-initramfs -u -k all
     - curtin in-target --target=/target -- update-grub
     # A getty on both COM ports: the declared one is the kernel console,

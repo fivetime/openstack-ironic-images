@@ -1,0 +1,5 @@
+# Every network interface with a device behind it - by any name, cabled
+# or not - gets its receive ring raised as it appears: at boot, on hotplug,
+# after a driver reload. Bonds, VLANs, bridges and veths have no device and
+# no ring of their own; their members are covered here. See nic-rx-ring.
+ACTION=="add", SUBSYSTEM=="net", TEST=="device", RUN+="/usr/local/sbin/nic-rx-ring $attr{ifindex}"

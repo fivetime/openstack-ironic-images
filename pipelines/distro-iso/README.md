@@ -64,7 +64,7 @@ the day it ran.
 
 ## The console contract (what verify enforces)
 
-Twelve checks, each printing its own verdict - a checker that only speaks
+Thirteen checks, each printing its own verdict - a checker that only speaks
 when it is unhappy cannot be told apart from one that did not run. A
 failure is a build failure: no image, no manifest, no upload.
 
@@ -80,6 +80,7 @@ failure is a build failure: no image, no manifest, no upload.
     ok   cloud-init runs and uses ConfigDrive (growth and networking on)
     ok   growpart tool present (root grows to the disk on first boot)
     ok   no hypervisor guest agent (qemu-ga, vmtoolsd, hv_kvp_daemon, spice-vdagent)
+    ok   NIC receive rings raised at boot (nic-rx-ring + udev rule, in the initramfs)
 
 Seven of them are the way they are because an earlier version could not do
 its job, and every one of those was found by watching what the stage said
@@ -150,6 +151,33 @@ say `rhgb quiet`; and `grub.cfg` lives in `/boot/grub2`, not `/boot/grub`.
 The checks were verified against a deliberately broken copy (2026-09-08):
 four of the eight sabotaged, exactly those four failed, the other four
 passed, exit status 1.
+
+## Receive rings (payload/)
+
+`payload/` holds files both answer files install: `nic-rx-ring`, the udev
+rule `70-nic-rx-ring.rules` that runs it for every network interface with
+a device behind it, and `90-nic-rx-ring.conf`, which puts both (and
+`ethtool`) into the initramfs. An answer file names one as
+`@@B64:<file>@@`; the seed stage substitutes the file's base64 on one line,
+which survives YAML, kickstart and heredoc terminators alike. The verify
+check compares what landed in the image byte for byte with `payload/`,
+looks for it in the initramfs listing, and on an enforcing SELinux image
+for a label.
+
+Why: a driver given no ring size picks its own. bnx2x splits a fixed
+4078-entry budget across its queues, and the kernel gives a 36-core DL360
+18 of them - 214 entries each. kvm-worker4/5 dropped 0.2-0.7% of all
+received packets in bursts ("fifo" receive errors, no CRC errors); with
+the ring at 4078 they dropped none over 59 hours and 1.6 G packets
+(2026-10-01..04). The script raises each NIC to its own maximum, capped at
+4096 for memory, halves on refusal, and leaves alone what reports no ring
+(USB NICs, some virtual ones).
+
+Why the initramfs: networkd configures a link only after udev is done with
+it, RUN programs included. With the rule only in the root filesystem it ran
+after the initramfs had already brought the links up, and each bnx2x port
+reloaded mid-boot; from the initramfs, every ring was set before the first
+link-up and each port initialised once (server01, 2026-10-04).
 
 ## Serial port per vendor
 

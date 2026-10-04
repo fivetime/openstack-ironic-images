@@ -135,10 +135,13 @@ seed_iso() {
     # not into the repository's answer file, not into the log.
     hash=$(openssl passwd -6 "$BAREMETAL_ADMIN_PASSWORD")
 
+    # @@B64:<file>@@ is a file from payload/, base64 on one line: shared
+    # by both answer files, and immune to quoting and heredoc terminators.
     ADMIN_USER="$ADMIN_USER" PW_HASH="$hash" \
     SERIAL_CONSOLE="$SERIAL_CONSOLE" SERIAL_UNIT="$serial_unit" \
+    PAYLOAD_DIR="$SCRIPT_DIR/payload" \
     python3 - "$src" "$dst" <<'RENDER'
-import os, sys
+import base64, os, re, sys
 src, dst = sys.argv[1], sys.argv[2]
 text = open(src).read()
 subs = {
@@ -149,6 +152,9 @@ subs = {
 }
 for k, v in subs.items():
     text = text.replace(k, v)
+text = re.sub(r"@@B64:([A-Za-z0-9._-]+)@@",
+              lambda m: base64.b64encode(open(os.path.join(os.environ["PAYLOAD_DIR"], m.group(1)), "rb").read()).decode(),
+              text)
 left = [l for l in text.splitlines() if "@@" in l]
 if left:
     sys.exit("unrendered placeholder in the answer file: " + left[0].strip())
@@ -579,6 +585,21 @@ no_guest_agents() {
     GUEST_AGENTS=${GUEST_AGENTS% }
     [[ -z "$GUEST_AGENTS" ]] || { log "        found: $GUEST_AGENTS"; return 1; }
 }
+nic_rx_ring_installed() {
+    local r=$1 list=$2 p=$SCRIPT_DIR/payload f
+    cmp -s "$p/nic-rx-ring" "$r/usr/local/sbin/nic-rx-ring" || return 1
+    [[ -x "$r/usr/local/sbin/nic-rx-ring" ]] || return 1
+    cmp -s "$p/70-nic-rx-ring.rules" "$r/etc/udev/rules.d/70-nic-rx-ring.rules" || return 1
+    cmp -s "$p/90-nic-rx-ring.conf" "$r/etc/dracut.conf.d/90-nic-rx-ring.conf" || return 1
+    for f in usr/local/sbin/nic-rx-ring etc/udev/rules.d/70-nic-rx-ring.rules usr/sbin/ethtool; do
+        grep -qE "(^|[ /])$f( |\$)" <<<"$list" || { log "        not in the initramfs: /$f"; return 1; }
+    done
+    # Written by %post under an enforcing policy, a file needs its label.
+    if grep -qsx 'SELINUX=enforcing' "$r/etc/selinux/config"; then
+        python3 -c 'import os, sys; [os.getxattr(f, "security.selinux") for f in sys.argv[1:]]' \
+            "$r/usr/local/sbin/nic-rx-ring" "$r/etc/udev/rules.d/70-nic-rx-ring.rules" 2>/dev/null || return 1
+    fi
+}
 is_a_template() {
     local r=$1
     [[ ! -s "$r/etc/machine-id" ]] || return 1
@@ -741,8 +762,14 @@ verify_image() {
     chk "no hypervisor guest agent (qemu-ga, vmtoolsd, hv_kvp_daemon, spice-vdagent)" \
         "a tenant would find the operator's agent on the machine they rent" \
         no_guest_agents "$mnt"
+    # 12 Receive rings raised before any link is up: payload/'s script,
+    #    udev rule and dracut snippet as they are in the repository, and
+    #    all three in the initramfs.
+    chk "NIC receive rings raised at boot (nic-rx-ring + udev rule, in the initramfs)" \
+        "drivers keep their own ring sizes - bnx2x 214 per queue, 0.2-0.7% of packets dropped" \
+        nic_rx_ring_installed "$mnt" "$list"
 
-    # 12+ The layer, if there is one: its own checks, its own verdict lines,
+    # 13+ The layer, if there is one: its own checks, its own verdict lines,
     #     and the manifest fields it read back from the image.
     local layer_failed=0
     LAYER_MANIFEST='{}'
@@ -764,8 +791,8 @@ verify_image() {
     umount "$mnt" || warn "could not unmount $mnt - the work directory will not clean up"
 
     ((_checks_failed == 0 && layer_failed == 0)) || \
-        die "verify failed ($_checks_failed of 12 base checks, $layer_failed layer checks); the image is not usable"
-    log "   12/12 passed${LAYER_KUBERNETES:+, layer checks passed}"
+        die "verify failed ($_checks_failed of 13 base checks, $layer_failed layer checks); the image is not usable"
+    log "   13/13 passed${LAYER_KUBERNETES:+, layer checks passed}"
 }
 
 # initrd_list <rootfs> <path-inside> — the file list of an initramfs.
