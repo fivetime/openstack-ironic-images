@@ -61,8 +61,9 @@ artifacts:
       from the DVD's package repository.
 
   freebsd-15.1-dhcpcd:
-    description: dhcpcd 10.5.2 for FreeBSD 15 (the latest package set)
-    url: https://pkg.freebsd.org/FreeBSD:15:amd64/latest/All/Hashed/dhcpcd-10.5.2~2%2416f6ezyu.pkg
+    description: dhcpcd 10.5.2 for FreeBSD 15 (the latest package set, mirrored)
+    url: https://github.com/fivetime/openstack-ironic-images/releases/download/upstream-mirror/dhcpcd-10.5.2-freebsd15-amd64-33cfb74d.pkg
+    upstream_url: https://pkg.freebsd.org/FreeBSD:15:amd64/latest/All/Hashed/dhcpcd-10.5.2~2%2416f6ezyu.pkg
     filename: freebsd-15.1-dhcpcd.pkg
     sha256: "33cfb74d1afb60bb0e090f15ab27c827278fd3bb8ebab6eaa6f6efb7951f5aca"
     size_bytes: 189537
@@ -72,14 +73,22 @@ artifacts:
       payload/dhcpcd-rc). From "latest", not the 15.1 release set (10.3.1):
       10.3.x dies of SIGSEGV when an IPv4 address it manages is deleted
       from outside ("service netif restart"); 10.5.2 does not (tested
-      2026-09-25). A Hashed file is removed when latest moves on: a 404
-      means updating this entry (packagesite.yaml's repopath for dhcpcd).
+      2026-09-25). Fetched from this repository's upstream-mirror release, not from
+      pkg.freebsd.org: a Hashed file there is named by its build hash and
+      removed whenever latest rebuilds the package (the 15.1 builds failed
+      with 404 on 2026-10-04). upstream_url records where it came from; the
+      bytes are the same (sha256). To move to another dhcpcd: take repopath
+      from latest's packagesite.yaml, download it, check +COMPACT_MANIFEST,
+      `gh release upload upstream-mirror
+      dhcpcd-<version>-freebsd<N>-amd64-<sha256[:8]>.pkg` here, then update
+      url, upstream_url, sha256 and size_bytes.
       No dependencies. The same file as openstack-cloud-images' entry of
       this name.
 
   freebsd-14.5-dhcpcd:
-    description: dhcpcd 10.5.2 for FreeBSD 14 (the latest package set)
-    url: https://pkg.freebsd.org/FreeBSD:14:amd64/latest/All/Hashed/dhcpcd-10.5.2~2%24qbptjtx3.pkg
+    description: dhcpcd 10.5.2 for FreeBSD 14 (the latest package set, mirrored)
+    url: https://github.com/fivetime/openstack-ironic-images/releases/download/upstream-mirror/dhcpcd-10.5.2-freebsd14-amd64-86290b11.pkg
+    upstream_url: https://pkg.freebsd.org/FreeBSD:14:amd64/latest/All/Hashed/dhcpcd-10.5.2~2%24qbptjtx3.pkg
     filename: freebsd-14.5-dhcpcd.pkg
     sha256: "86290b114ef6c1303a95a2435b4750916d123ec3adb817203f27e6279e0e1689"
     size_bytes: 189907
