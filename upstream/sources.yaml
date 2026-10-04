@@ -62,10 +62,10 @@ artifacts:
 
   freebsd-15.1-dhcpcd:
     description: dhcpcd 10.5.2 for FreeBSD 15 (the latest package set)
-    url: https://pkg.freebsd.org/FreeBSD:15:amd64/latest/All/Hashed/dhcpcd-10.5.2~2%24chcfcic6.pkg
+    url: https://pkg.freebsd.org/FreeBSD:15:amd64/latest/All/Hashed/dhcpcd-10.5.2~2%2416f6ezyu.pkg
     filename: freebsd-15.1-dhcpcd.pkg
-    sha256: "a36690fc27aa5da12306b2701766bf626dfe840c86920bec50e1584e30825bb8"
-    size_bytes: 189604
+    sha256: "33cfb74d1afb60bb0e090f15ab27c827278fd3bb8ebab6eaa6f6efb7951f5aca"
+    size_bytes: 189537
     licence: BSD 2-clause
     note: |
       Not on the DVD; the images' only DHCP client (pipelines/bsdinstall-iso/
