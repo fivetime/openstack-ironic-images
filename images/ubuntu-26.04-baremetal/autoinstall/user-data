@@ -187,3 +187,16 @@ autoinstall:
     - curtin in-target --target=/target -- cloud-init clean --logs --seed
     - truncate -s 0 /target/etc/machine-id
     - rm -f /target/var/lib/dbus/machine-id
+    #    The NVMe-oF host identity too: nvme-cli's postinst writes hostnqn
+    #    and hostid on the build VM, so every machine deployed from the
+    #    image had the same NQN - and a Cinder NVMe-oF gateway authorises
+    #    by NQN (server01 and the X8-2 could see each other's volumes,
+    #    2026-10-13). A first-boot unit from payload/ generates a random
+    #    one before anything connects. Checked by the verify stage.
+    - rm -f /target/etc/nvme/hostnqn /target/etc/nvme/hostid
+    - |
+      mkdir -p /target/usr/local/sbin /target/etc/systemd/system
+      echo '@@B64:nvme-host-identity@@' | base64 -d > /target/usr/local/sbin/nvme-host-identity
+      chmod 0755 /target/usr/local/sbin/nvme-host-identity
+      echo '@@B64:nvme-host-identity.service@@' | base64 -d > /target/etc/systemd/system/nvme-host-identity.service
+    - curtin in-target --target=/target -- systemctl enable nvme-host-identity.service

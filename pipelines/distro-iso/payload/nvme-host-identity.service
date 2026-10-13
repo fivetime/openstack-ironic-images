@@ -1,0 +1,18 @@
+# First boot: a host NQN and host ID of this machine's own, before any
+# NVMe-oF connection can be made. See /usr/local/sbin/nvme-host-identity.
+[Unit]
+Description=Generate this machine's NVMe-oF host identity
+Documentation=man:nvme-gen-hostnqn(1)
+DefaultDependencies=no
+ConditionPathExists=!/etc/nvme/hostnqn
+After=local-fs.target
+Before=sysinit.target shutdown.target nvmf-autoconnect.service nvmefc-boot-connections.service
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/nvme-host-identity
+
+[Install]
+WantedBy=sysinit.target

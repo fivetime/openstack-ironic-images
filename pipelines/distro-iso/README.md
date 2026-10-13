@@ -76,7 +76,8 @@ failure is a build failure: no image, no manifest, no upload.
     ok   early-boot console drivers (hid_generic usbhid mgag200 ast)
     ok   early-boot config-drive drivers (sr_mod isofs)
     ok   linux-firmware landed (bnx2x blobs present)
-    ok   template identity (empty machine-id, no ssh host keys)
+    ok   template identity (empty machine-id, no ssh host keys, no NVMe hostnqn/hostid)
+    ok   NVMe-oF host identity generated on first boot (nvme-host-identity enabled)
     ok   cloud-init runs and uses ConfigDrive (growth and networking on)
     ok   growpart tool present (root grows to the disk on first boot)
     ok   no hypervisor guest agent (qemu-ga, vmtoolsd, hv_kvp_daemon, spice-vdagent)
@@ -183,6 +184,30 @@ mid-boot. The rule is in the initramfs as well for that reason, but the
 real fix was the next section: with no network in the initramfs the NIC
 drivers load in the root filesystem, every ring was set before networkd
 started, and each port initialised once.
+
+## NVMe-oF host identity (payload/)
+
+A Cinder NVMe-oF gateway authorises a host by its NQN, so two machines
+with the same one see each other's volumes. Ubuntu's nvme-cli postinst
+writes `/etc/nvme/hostnqn` (`nvme gen-hostnqn`) and `/etc/nvme/hostid`
+(`uuidgen`) when the package is installed - on the build VM, once, for
+every machine deployed from the image: `ubuntu-26.04-baremetal` 364f0e22
+gave server01 and the X8-2 the same `uuid:1455c7f6-...` (2026-10-13).
+Rocky's nvme-cli 2.16 writes neither, but anaconda copies the installer
+environment's pair into the target before `%post`: `rocky-10-baremetal`
+b319e911 and both of its Kubernetes layers carry one each.
+
+Both answer files delete the two files and install `nvme-host-identity`
+with `nvme-host-identity.service`, a oneshot in `sysinit.target`
+(`ConditionPathExists=!/etc/nvme/hostnqn`, before `nvmf-autoconnect`),
+which writes a random UUID into both on first boot. Random rather than
+DMI-derived: some firmware ships a UUID that is half `ffff` (the X8-2's is
+`080020ff-ffff-ffff-ffff-0010e0ea377e`) and may repeat across a model, and
+a DMI-derived NQN survives Ironic cleaning, so the next tenant of a
+machine would inherit grants the last one never revoked. A file that is
+already there - an operator's, or an earlier boot's - is left alone. The
+template check fails on either file in the image; a second check compares
+script and unit byte for byte with `payload/` and wants the unit enabled.
 
 ## No network in the initramfs
 

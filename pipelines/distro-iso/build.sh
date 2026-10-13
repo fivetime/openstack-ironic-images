@@ -406,11 +406,13 @@ for k,v in d["components"].items(): print(f"{k}={v}")' "$LAYER_LOCK/artifacts.ya
 # firmware one) and one that could never pass (hid_generic vs
 # hid-generic.ko).
 _checks_failed=0
+_checks_run=0
 
 # chk <name> <reason-if-it-fails> ; the check itself is the exit status of
 # the command that precedes it, passed in as $3...
 chk() {
     local name=$1 detail=$2; shift 2
+    _checks_run=$((_checks_run + 1))
     if "$@"; then
         log "   ok   $name"
     else
@@ -611,6 +613,22 @@ is_a_template() {
     [[ ! -s "$r/etc/machine-id" ]] || return 1
     ! compgen -G "$r/etc/ssh/ssh_host_*" >/dev/null || return 1
     [[ ! -e "$r/var/lib/dbus/machine-id" ]] || return 1
+    # nvme-cli's package scripts write both on the build VM; left in, every
+    # deployed machine has the same NVMe-oF host NQN (2026-10-13).
+    [[ ! -e "$r/etc/nvme/hostnqn" && ! -e "$r/etc/nvme/hostid" ]] || return 1
+}
+# The first-boot unit that replaces them: payload/'s script and unit as
+# they are in the repository, enabled, and ordered before the autoconnect.
+nvme_host_identity_installed() {
+    local r=$1 p=$SCRIPT_DIR/payload u=etc/systemd/system/nvme-host-identity.service
+    cmp -s "$p/nvme-host-identity" "$r/usr/local/sbin/nvme-host-identity" || return 1
+    [[ -x "$r/usr/local/sbin/nvme-host-identity" ]] || return 1
+    cmp -s "$p/nvme-host-identity.service" "$r/$u" || return 1
+    [[ -L "$r/etc/systemd/system/sysinit.target.wants/nvme-host-identity.service" ]] || return 1
+    if grep -qsx 'SELINUX=enforcing' "$r/etc/selinux/config"; then
+        python3 -c 'import os, sys; [os.getxattr(f, "security.selinux") for f in sys.argv[1:]]' \
+            "$r/usr/local/sbin/nvme-host-identity" "$r/$u" 2>/dev/null || return 1
+    fi
 }
 
 # Whether cloud-init will actually run on the deployed machine and read
@@ -692,6 +710,7 @@ verify_image() {
     log "== verify: console contract, initramfs, firmware, no guest agent"
     local loop root img list boot_mnt=
     _checks_failed=0
+    _checks_run=0
     disk_attach loop "$raw" -P
     # Read-only: nothing here writes, and a read-write mount left behind by
     # a failed check is how a finished install got emptied once.
@@ -749,9 +768,12 @@ verify_image() {
         "cards that load host firmware stay dark" \
         firmware_landed "$mnt"
     # 8 A template, not a machine.
-    chk "template identity (empty machine-id, no ssh host keys)" \
+    chk "template identity (empty machine-id, no ssh host keys, no NVMe hostnqn/hostid)" \
         "every deployed machine would share an identity" \
         is_a_template "$mnt"
+    chk "NVMe-oF host identity generated on first boot (nvme-host-identity enabled)" \
+        "a deployed machine has no host NQN until someone runs nvme gen-hostnqn" \
+        nvme_host_identity_installed "$mnt"
     # 9 And one that will actually read the config drive it is given.
     chk "cloud-init runs and uses ConfigDrive (growth and networking on)" \
         "the machine boots with no metadata, no network and a 12 GB root" \
@@ -803,8 +825,8 @@ verify_image() {
     umount "$mnt" || warn "could not unmount $mnt - the work directory will not clean up"
 
     ((_checks_failed == 0 && layer_failed == 0)) || \
-        die "verify failed ($_checks_failed of 14 base checks, $layer_failed layer checks); the image is not usable"
-    log "   14/14 passed${LAYER_KUBERNETES:+, layer checks passed}"
+        die "verify failed ($_checks_failed of $_checks_run base checks, $layer_failed layer checks); the image is not usable"
+    log "   $_checks_run/$_checks_run passed${LAYER_KUBERNETES:+, layer checks passed}"
 }
 
 # initrd_list <rootfs> <path-inside> — the file list of an initramfs.

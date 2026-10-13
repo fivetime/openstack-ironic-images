@@ -1,0 +1,38 @@
+#!/bin/sh
+# Give this machine its own NVMe-oF host identity: /etc/nvme/hostnqn and
+# /etc/nvme/hostid, generated once, on first boot.
+#
+# Run by nvme-host-identity.service before anything can speak NVMe-oF
+# (nvmf-autoconnect, a connect from the shell). The unit only starts when
+# hostnqn is missing, so an identity the machine already has - or one an
+# operator wrote - is never replaced.
+#
+# Why: nvme-cli's package scripts write both files when the package is
+# installed, which for an image means once, on the build VM, for every
+# machine ever deployed from it. A Cinder NVMe-oF gateway authorises hosts
+# by NQN, so two machines with the same one see each other's volumes
+# (ubuntu-26.04-baremetal 364f0e22 gave server01 and the X8-2 the same
+# NQN, 2026-10-13).
+#
+# Random, not derived from the DMI product UUID (what nvme gen-hostnqn
+# does when it can): some firmware ships a UUID that is mostly ffff and
+# may repeat across machines of a model, and a DMI-derived NQN survives
+# Ironic cleaning, so the next tenant of a machine would inherit volume
+# grants the last one never revoked. Random means a new identity per
+# deployment.
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+set -e
+
+[ -s /etc/nvme/hostnqn ] && exit 0
+
+u=$(cat /proc/sys/kernel/random/uuid)
+mkdir -p /etc/nvme
+umask 022
+# hostid first and hostnqn last, each by rename: the unit's condition is
+# hostnqn, so a boot interrupted half-way runs this again.
+printf '%s\n' "$u" > /etc/nvme/hostid.new
+mv -f /etc/nvme/hostid.new /etc/nvme/hostid
+printf 'nqn.2014-08.org.nvmexpress:uuid:%s\n' "$u" > /etc/nvme/hostnqn.new
+mv -f /etc/nvme/hostnqn.new /etc/nvme/hostnqn
+logger -t nvme-host-identity -- "generated hostnqn nqn.2014-08.org.nvmexpress:uuid:$u" 2>/dev/null || true
