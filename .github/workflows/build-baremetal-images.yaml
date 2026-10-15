@@ -124,7 +124,9 @@ jobs:
 
   build:
     needs: discover
-    runs-on: self-hosted
+    # Runs QEMU with KVM: RaaS's kvm tier lands only on the bare-metal computes
+    # (kvm-worker4/5); the default tier may land on kvm-worker1-3, themselves VMs.
+    runs-on: raas-ubuntu-24.04-kvm
     timeout-minutes: 180
     strategy:
       fail-fast: false
